@@ -1,0 +1,6 @@
+{
+  "name": "Kairo - Gestión y Filtro de Clientes",
+  "description": "Sistema interactivo para registrar, calificar, filtrar y gestionar nuevos clientes y oportunidades con vistas de tabla, pipeline y analítica comercial.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
