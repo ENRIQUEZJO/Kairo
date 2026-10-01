@@ -1,0 +1,53 @@
+name: Extractor Quincenal ONAPI República Dominicana
+
+on:
+  # Se ejecuta automáticamente el 1 y el 16 de cada mes a las 3:00 PM hora RD (19:00 UTC)
+  schedule:
+    - cron: '0 19 1,16 * *'
+
+  # Permite ejecutarlo manualmente en cualquier momento desde la pestaña "Actions" en GitHub
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extract-and-enrich:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: 2. Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 3. Instalar librerías de extracción
+        run: |
+          python -m pip install --upgrade pip
+          pip install pdfplumber pandas requests
+
+      - name: 4. Ejecutar Pipeline Extractor de ONAPI
+        env:
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+        run: |
+          echo "[*] Iniciando extractor automático de ONAPI..."
+          # Si tienes el PDF en el repo o url de descarga directa:
+          python scripts/extractor_onapi_auto.py
+
+      - name: 5. Guardar CSV como artefacto descargable
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuevas-empresas-rd-${{ github.run_id }}
+          path: nuevas_empresas_rd_completo.csv
+          retention-days: 30
+
+      - name: 6. Guardar y actualizar CSV en el repositorio
+        run: |
+          git config --global user.name 'GitHub Actions Bot'
+          git config --global user.email 'bot@kairo.com.do'
+          git add nuevas_empresas_rd_completo.csv
+          git commit -m "Auto: Nuevas empresas ONAPI extraídas [$(date +'%Y-%m-%d')]" || exit 0
+          git push
