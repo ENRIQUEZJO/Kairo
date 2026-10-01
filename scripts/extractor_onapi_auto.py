@@ -21,7 +21,7 @@ except ImportError:
     sys.exit(1)
 
 # Configuración por variables de entorno o parámetros
-GOOGLE_API_KEY = os.environ.get("GOOGLE_PLACES_API_KEY", "")
+GOOGLE_API_KEY = os.environ.get("AIzaSyBJFwPHsBloLby04g7hQsbUgsz8lYmqjRA", "")
 URL_BOLETINES_ONAPI = "https://onapi.gob.do/index.php/publicaciones/boletines"
 ARCHIVO_SALIDA = "nuevas_empresas_rd_completo.csv"
 
