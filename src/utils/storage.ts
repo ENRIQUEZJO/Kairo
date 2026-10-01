@@ -1,7 +1,8 @@
 import { Client, ClientStats } from '../types/client';
 import { INITIAL_CLIENTS } from '../data/mockClients';
+import { clasificarActividadEmpresarial } from './sectorClassifier';
 
-const STORAGE_KEY = 'kairo_onapi_leads_v4';
+const STORAGE_KEY = 'kairo_onapi_leads_v5';
 
 export function loadStoredClients(): Client[] {
   try {
@@ -12,7 +13,23 @@ export function loadStoredClients(): Client[] {
     }
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length > 0) {
-      return parsed;
+      // Auto-migrar y asegurar que cada cliente tenga su sector clasificado
+      const migrated: Client[] = parsed.map((c: Client) => ({
+        ...c,
+        sector: c.sector || clasificarActividadEmpresarial(c.onapi?.descripcionActividad || c.industry || ''),
+      }));
+
+      // Si falta la nueva empresa financiera, agregarla al listado
+      const hasFinancial = migrated.some((c: Client) => c.sector?.toLowerCase().includes('financ'));
+      if (!hasFinancial) {
+        const financialLead = INITIAL_CLIENTS.find((c) => c.id === 'onapi-2026-08155');
+        if (financialLead) {
+          migrated.push(financialLead);
+        }
+      }
+
+      saveClients(migrated);
+      return migrated;
     }
     return INITIAL_CLIENTS;
   } catch (err) {

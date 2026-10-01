@@ -10,7 +10,7 @@ interface PythonCodeModalProps {
 export const PythonCodeModal: React.FC<PythonCodeModalProps> = ({
   isOpen,
   onClose,
-  apiKey = 'TU_API_KEY_DE_GOOGLE_AQUI',
+  apiKey = 'AIzaSyBJFwPHsBloLby04g7hQsbUgsz8lYmqjRA',
 }) => {
   if (!isOpen) return null;
 
