@@ -1,11 +1,12 @@
-import React, { useState } from 'react';
-import { Advisor, Client, PipelineExecutionLog } from '../types/client';
+import React, { useState, useRef } from 'react';
+import { Advisor, Client } from '../types/client';
 import {
   extraerDatosOnapiTexto,
   obtenerContactoGoogle,
   obtenerTipoEmpresaDgii,
   convertirRegistroACliente,
 } from '../utils/pipelineEngine';
+import { extraerTextoDePdf, extraerEmpresasDeCSV, ExtractedOnapiRecord } from '../utils/pdfExtractor';
 import { exportClientsToCSV } from '../utils/storage';
 import { SAMPLE_ONAPI_RAW_BULLETIN_TEXT } from '../data/mockOnapiBoletin';
 import {
@@ -25,6 +26,10 @@ import {
   Code2,
   Phone,
   RefreshCw,
+  FileSpreadsheet,
+  FileType,
+  AlertCircle,
+  FileCheck2,
 } from 'lucide-react';
 
 interface PipelineRunnerModalProps {
@@ -33,6 +38,7 @@ interface PipelineRunnerModalProps {
   onImportToClients: (newClients: Client[]) => void;
   onOpenPythonModal: () => void;
   advisors: Advisor[];
+  initialMode?: 'file' | 'demo' | 'text';
 }
 
 export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
@@ -41,12 +47,19 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
   onImportToClients,
   onOpenPythonModal,
   advisors,
+  initialMode = 'file',
 }) => {
   if (!isOpen) return null;
 
-  const [inputMode, setInputMode] = useState<'demo' | 'text' | 'file'>('demo');
+  const [inputMode, setInputMode] = useState<'file' | 'demo' | 'text'>(initialMode);
   const [customText, setCustomText] = useState(SAMPLE_ONAPI_RAW_BULLETIN_TEXT);
   const [fileName, setFileName] = useState<string | null>(null);
+  const [fileSize, setFileSize] = useState<string | null>(null);
+  const [isParsingFile, setIsParsingFile] = useState(false);
+  const [parsingProgress, setParsingProgress] = useState<string | null>(null);
+  const [parsedRecords, setParsedRecords] = useState<ExtractedOnapiRecord[] | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Execution state
   const [isRunning, setIsRunning] = useState(false);
@@ -60,21 +73,91 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
     setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString('es-DO')}] ${msg}`]);
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  const processUploadedFile = async (file: File) => {
+    setIsParsingFile(true);
     setFileName(file.name);
+    setFileSize(`${(file.size / 1024).toFixed(1)} KB`);
+    setParsedRecords(null);
+    setLogs([]);
+    appendLog(`Leyendo archivo seleccionado: "${file.name}" (${(file.size / 1024).toFixed(1)} KB)...`);
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const content = event.target?.result as string;
-      if (content) {
-        setCustomText(content);
-        appendLog(`Archivo "${file.name}" cargado (${Math.round(content.length / 1024)} KB)`);
+    try {
+      const ext = file.name.split('.').pop()?.toLowerCase();
+
+      // 1. Archivo PDF
+      if (ext === 'pdf' || file.type.includes('pdf')) {
+        appendLog('📄 Detectado archivo PDF oficial de ONAPI. Extrayendo texto por páginas...');
+        setParsingProgress('Iniciando lector de PDF...');
+
+        const textoExtraido = await extraerTextoDePdf(file, (paginaActual, totalPaginas) => {
+          setParsingProgress(`Analizando página ${paginaActual} de ${totalPaginas}...`);
+          appendLog(`    -> Página ${paginaActual}/${totalPaginas} procesada`);
+        });
+
+        setCustomText(textoExtraido);
+        const empresas = extraerDatosOnapiTexto(textoExtraido);
+        setParsedRecords(empresas);
+        appendLog(`[✓] Extracción del PDF finalizada. Se detectaron ${empresas.length} registros empresariales.`);
       }
-    };
-    reader.readAsText(file);
+      // 2. Archivo CSV
+      else if (ext === 'csv' || file.type.includes('csv')) {
+        appendLog('📊 Detectado archivo CSV. Procesando columnas de denominación y actividad...');
+        const texto = await file.text();
+        const empresasCSV = extraerEmpresasDeCSV(texto);
+        if (empresasCSV.length > 0) {
+          setParsedRecords(empresasCSV);
+          setCustomText(texto);
+          appendLog(`[✓] Archivo CSV procesado: ${empresasCSV.length} empresas identificadas.`);
+        } else {
+          // Fallback a regex
+          const fallback = extraerDatosOnapiTexto(texto);
+          setParsedRecords(fallback);
+          setCustomText(texto);
+          appendLog(`[✓] Procesado como texto delimitado: ${fallback.length} empresas encontradas.`);
+        }
+      }
+      // 3. Archivo TXT o similar
+      else {
+        appendLog('📝 Leyendo contenido de texto...');
+        const texto = await file.text();
+        setCustomText(texto);
+        const empresas = extraerDatosOnapiTexto(texto);
+        setParsedRecords(empresas);
+        appendLog(`[✓] Archivo de texto procesado: ${empresas.length} empresas identificadas.`);
+      }
+    } catch (err: any) {
+      console.error('Error procesando archivo:', err);
+      appendLog(`[!] Error al procesar archivo: ${err.message || 'Formato no soportado'}`);
+    } finally {
+      setIsParsingFile(false);
+      setParsingProgress(null);
+    }
+  };
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      processUploadedFile(file);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      processUploadedFile(file);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragOver(false);
   };
 
   const runPipeline = async () => {
@@ -86,30 +169,37 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
     setProcessedClients([]);
 
     appendLog('Iniciando infraestructura de datos ONAPI -> Google Places -> DGII...');
-    await new Promise((r) => setTimeout(r, 600));
+    await new Promise((r) => setTimeout(r, 400));
 
     // ==========================================
-    // ETAPA 1: EXTRACCIÓN LOCAL ONAPI (pdfplumber)
+    // ETAPA 1: OBTENCIÓN DE REGISTROS
     // ==========================================
-    appendLog('[+] ETAPA 1: Analizando boletín oficial de ONAPI con expresiones regulares...');
-    const registrosBase = extraerDatosOnapiTexto(customText);
+    appendLog('[+] ETAPA 1: Parseando denominaciones y actividades de ONAPI...');
+    let registrosBase: ExtractedOnapiRecord[] = [];
+
+    if (inputMode === 'file' && parsedRecords && parsedRecords.length > 0) {
+      registrosBase = parsedRecords;
+    } else {
+      registrosBase = extraerDatosOnapiTexto(customText);
+    }
 
     if (registrosBase.length === 0) {
-      appendLog('[-] Error: No se encontraron patrones "Denominación:" y "Actividad:".');
+      appendLog('[-] Error: No se encontraron registros de empresas en el archivo o texto proporcionado.');
+      appendLog('[-] Asegúrate de que el documento incluya campos "Denominación:" y "Actividad:" o nombres comerciales terminados en S.R.L., S.A.S., etc.');
       setIsRunning(false);
       return;
     }
 
-    appendLog(`[✓] Extracción ONAPI exitosa: ${registrosBase.length} denominaciones comerciales identificadas.`);
-    setProgress(30);
-    await new Promise((r) => setTimeout(r, 700));
+    appendLog(`[✓] Extracción ONAPI exitosa: ${registrosBase.length} empresas dominicanas identificadas.`);
+    setProgress(25);
+    await new Promise((r) => setTimeout(r, 500));
 
     // ==========================================
     // ETAPA 2 & 3: ENRIQUECIMIENTO (Google Places + DGII)
     // ==========================================
     setCurrentStep(2);
     appendLog('[+] ETAPA 2: Consultando Google Places API (República Dominicana)...');
-    appendLog('[+] ETAPA 3: Consultando API de la DGII / RNC para clasificación societaria...');
+    appendLog('[+] ETAPA 3: Consultando clasificación fiscal societaria de la DGII...');
 
     const resultados: Client[] = [];
     const total = registrosBase.length;
@@ -127,12 +217,12 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
       const clientObj = convertirRegistroACliente(item, placesInfo, dgiiInfo, i);
       resultados.push(clientObj);
 
-      appendLog(`       • Places: Tel ${placesInfo.telefonoCorporativo} | ${placesInfo.direccionExacta.slice(0, 40)}...`);
-      appendLog(`       • DGII: ${dgiiInfo.tipoSociedad} | RNC: ${dgiiInfo.rnc}`);
+      appendLog(`       • Places: ${placesInfo.telefonoCorporativo} | ${placesInfo.direccionExacta.slice(0, 38)}...`);
+      appendLog(`       • DGII: ${dgiiInfo.tipoSociedad} (RNC: ${dgiiInfo.rnc})`);
 
-      const stepProgress = 30 + Math.round(((i + 1) / total) * 55);
+      const stepProgress = 25 + Math.round(((i + 1) / total) * 65);
       setProgress(stepProgress);
-      await new Promise((r) => setTimeout(r, 350));
+      await new Promise((r) => setTimeout(r, 200));
     }
 
     // ==========================================
@@ -158,20 +248,26 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto">
       <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs" onClick={onClose} />
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative w-full max-w-5xl bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
+
+      <div className="flex min-h-full items-center justify-center p-3 sm:p-4">
+        <div className="relative w-full max-w-4xl bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh]">
           {/* Header */}
-          <div className="px-6 py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+          <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800">
             <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-xs">
+              <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white shadow-md">
                 <Database className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-base font-bold text-slate-900">
-                  Infraestructura de Datos: ONAPI ➔ Google Places ➔ DGII
-                </h3>
-                <p className="text-xs text-slate-500">
-                  Extracción automatizada de nuevos registros comerciales y enriquecimiento de contacto en República Dominicana
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-bold text-white">
+                    Extractor Oficial de Boletines ONAPI
+                  </h3>
+                  <span className="px-2 py-0.5 text-[10px] font-bold bg-indigo-500/20 text-indigo-300 rounded-md border border-indigo-400/30">
+                    PDF · CSV · TXT
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400">
+                  Carga el PDF oficial de ONAPI y enriquécelo automáticamente con Google Places y la DGII
                 </p>
               </div>
             </div>
@@ -179,224 +275,196 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
             <div className="flex items-center gap-2">
               <button
                 onClick={onOpenPythonModal}
-                className="px-3 py-1.5 text-xs font-semibold text-slate-700 hover:text-slate-900 bg-white border border-slate-200 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
+                className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors border border-slate-700 cursor-pointer"
               >
-                <Code2 className="w-3.5 h-3.5 text-indigo-600" />
-                <span>Ver Script Python</span>
+                <Code2 className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Script Python</span>
               </button>
 
               <button
                 onClick={onClose}
-                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
+                className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
           </div>
 
-          {/* Interactive Pipeline Diagram */}
-          <div className="px-6 py-4 bg-slate-900 text-white border-b border-slate-800">
-            <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
-              Flujo del Pipeline de Extracción y Enriquecimiento
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-center">
-              {/* Step 1 */}
-              <div
-                className={`p-2.5 rounded-lg border text-xs transition-all ${
-                  currentStep === 1
-                    ? 'border-indigo-400 bg-indigo-950/80 ring-1 ring-indigo-400'
-                    : currentStep > 1
-                    ? 'border-emerald-600/70 bg-emerald-950/40 text-emerald-200'
-                    : 'border-slate-800 bg-slate-850 text-slate-400'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-bold text-[11px] uppercase tracking-wide">1. ONAPI PDF</span>
-                  {currentStep > 1 ? (
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  ) : (
-                    <FileText className="w-3.5 h-3.5 text-slate-400" />
-                  )}
-                </div>
-                <p className="text-[11px] leading-tight opacity-90">
-                  pdfplumber extrae Nombre Comercial & Actividad
-                </p>
-              </div>
-
-              {/* Step 2 */}
-              <div
-                className={`p-2.5 rounded-lg border text-xs transition-all ${
-                  currentStep === 2
-                    ? 'border-indigo-400 bg-indigo-950/80 ring-1 ring-indigo-400'
-                    : currentStep > 2
-                    ? 'border-emerald-600/70 bg-emerald-950/40 text-emerald-200'
-                    : 'border-slate-800 bg-slate-850 text-slate-400'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-bold text-[11px] uppercase tracking-wide">2. Google Places</span>
-                  {currentStep > 2 ? (
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  ) : (
-                    <MapPin className="w-3.5 h-3.5 text-slate-400" />
-                  )}
-                </div>
-                <p className="text-[11px] leading-tight opacity-90">
-                  Búsqueda RD: Teléfono corporativo & Dirección
-                </p>
-              </div>
-
-              {/* Step 3 */}
-              <div
-                className={`p-2.5 rounded-lg border text-xs transition-all ${
-                  currentStep === 3
-                    ? 'border-indigo-400 bg-indigo-950/80 ring-1 ring-indigo-400'
-                    : currentStep > 3
-                    ? 'border-emerald-600/70 bg-emerald-950/40 text-emerald-200'
-                    : 'border-slate-800 bg-slate-850 text-slate-400'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-bold text-[11px] uppercase tracking-wide">3. API DGII / RNC</span>
-                  {currentStep > 3 ? (
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  ) : (
-                    <Building className="w-3.5 h-3.5 text-slate-400" />
-                  )}
-                </div>
-                <p className="text-[11px] leading-tight opacity-90">
-                  Tipo de Sociedad (S.R.L., S.A.S., E.I.R.L., S.A.)
-                </p>
-              </div>
-
-              {/* Step 4 */}
-              <div
-                className={`p-2.5 rounded-lg border text-xs transition-all ${
-                  currentStep === 4
-                    ? 'border-emerald-500 bg-emerald-950/70 text-emerald-200 ring-1 ring-emerald-400'
-                    : 'border-slate-800 bg-slate-850 text-slate-400'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-bold text-[11px] uppercase tracking-wide">4. Base de Datos / CSV</span>
-                  {isCompleted ? (
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  ) : (
-                    <Download className="w-3.5 h-3.5 text-slate-400" />
-                  )}
-                </div>
-                <p className="text-[11px] leading-tight opacity-90">
-                  Consolidado para CRM y archivo CSV listo
-                </p>
-              </div>
-            </div>
-
-            {/* Progress Bar */}
-            {isRunning && (
-              <div className="mt-3">
-                <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
-                  <div
-                    className="bg-indigo-500 h-full transition-all duration-300 rounded-full"
-                    style={{ width: `${progress}%` }}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Scrollable Center Content */}
-          <div className="flex-1 overflow-y-auto p-6 space-y-5">
-            {/* Input Selection tabs */}
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                  Fuente de Entrada del Boletín ONAPI
+          {/* Modal Body */}
+          <div className="p-6 overflow-y-auto space-y-5">
+            {/* Input Selection Tabs */}
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                  <UploadCloud className="w-4 h-4 text-indigo-600" />
+                  <span>Fuente de los datos:</span>
                 </label>
-                <div className="flex items-center p-1 bg-slate-100 rounded-lg gap-1">
+
+                <div className="flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200">
                   <button
-                    onClick={() => setInputMode('demo')}
-                    className={`px-3 py-1 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
-                      inputMode === 'demo' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+                    onClick={() => setInputMode('file')}
+                    className={`px-3 py-1 text-xs font-semibold rounded-md transition-colors cursor-pointer flex items-center gap-1.5 ${
+                      inputMode === 'file' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    Boletín Demo (2026)
+                    <UploadCloud className="w-3.5 h-3.5" />
+                    <span>Subir Archivo (PDF/CSV/TXT)</span>
+                  </button>
+                  <button
+                    onClick={() => setInputMode('demo')}
+                    className={`px-3 py-1 text-xs font-semibold rounded-md transition-colors cursor-pointer flex items-center gap-1.5 ${
+                      inputMode === 'demo' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                    <span>Boletín Demo (10 Empresas)</span>
                   </button>
                   <button
                     onClick={() => setInputMode('text')}
-                    className={`px-3 py-1 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
-                      inputMode === 'text' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+                    className={`px-3 py-1 text-xs font-semibold rounded-md transition-colors cursor-pointer flex items-center gap-1.5 ${
+                      inputMode === 'text' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    Pegar Texto
-                  </button>
-                  <button
-                    onClick={() => setInputMode('file')}
-                    className={`px-3 py-1 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
-                      inputMode === 'file' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
-                    }`}
-                  >
-                    Subir Archivo
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>Pegar Texto</span>
                   </button>
                 </div>
               </div>
 
-              {inputMode === 'demo' && (
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <FileText className="w-4 h-4 text-indigo-600 shrink-0" />
-                    <span>
-                      Boletín oficial precargado con <strong>10 nuevas empresas registradas</strong> en Santo Domingo, Santiago, Punta Cana y La Vega.
-                    </span>
+              {/* Mode 1: File Upload (PDF, CSV, TXT) */}
+              {inputMode === 'file' && (
+                <div>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".pdf,.txt,.csv"
+                    onChange={handleFileInputChange}
+                    className="hidden"
+                  />
+
+                  <div
+                    onDrop={handleDrop}
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onClick={() => fileInputRef.current?.click()}
+                    className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all ${
+                      isDragOver
+                        ? 'border-indigo-500 bg-indigo-50/70 scale-[1.01]'
+                        : fileName
+                        ? 'border-emerald-400 bg-emerald-50/30'
+                        : 'border-slate-300 bg-slate-50 hover:bg-slate-100 hover:border-slate-400'
+                    }`}
+                  >
+                    {isParsingFile ? (
+                      <div className="flex flex-col items-center justify-center py-4">
+                        <RefreshCw className="w-10 h-10 text-indigo-600 animate-spin mb-3" />
+                        <span className="text-sm font-bold text-slate-800">
+                          {parsingProgress || 'Extrayendo contenido del documento...'}
+                        </span>
+                        <span className="text-xs text-slate-500 mt-1">
+                          Esto puede tomar unos segundos para boletines de múltiples páginas
+                        </span>
+                      </div>
+                    ) : fileName ? (
+                      <div className="flex flex-col items-center justify-center">
+                        <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mb-2">
+                          <FileCheck2 className="w-6 h-6" />
+                        </div>
+                        <span className="text-sm font-bold text-slate-900">
+                          {fileName}
+                        </span>
+                        <span className="text-xs text-slate-500 mt-0.5">
+                          Tamaño: {fileSize} · {parsedRecords ? `${parsedRecords.length} empresas detectadas` : 'Listo para procesar'}
+                        </span>
+                        <div className="mt-3 flex items-center gap-2">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold bg-emerald-100 text-emerald-800">
+                            ✓ Archivo cargado correctamente
+                          </span>
+                          <span className="text-xs text-indigo-600 underline font-medium">
+                            Haz clic para cambiar archivo
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center">
+                        <UploadCloud className="w-10 h-10 text-indigo-500 mb-2" />
+                        <span className="text-sm font-bold text-slate-800 block">
+                          Haz clic aquí para seleccionar tu archivo o arrástralo y suéltalo
+                        </span>
+                        <span className="text-xs text-slate-500 mt-1 block">
+                          Soporta archivos oficiales de ONAPI en formato <strong>.PDF</strong>, <strong>.CSV</strong> o <strong>.TXT</strong>
+                        </span>
+                        <div className="mt-4 flex items-center justify-center gap-3 text-[11px] text-slate-500">
+                          <span className="inline-flex items-center gap-1 bg-white px-2.5 py-1 rounded-md border border-slate-200">
+                            <FileType className="w-3.5 h-3.5 text-rose-500" /> PDF Oficial
+                          </span>
+                          <span className="inline-flex items-center gap-1 bg-white px-2.5 py-1 rounded-md border border-slate-200">
+                            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" /> CSV Delimitado
+                          </span>
+                          <span className="inline-flex items-center gap-1 bg-white px-2.5 py-1 rounded-md border border-slate-200">
+                            <FileText className="w-3.5 h-3.5 text-blue-500" /> Texto Plano
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  <span className="text-[11px] font-mono text-slate-500">Formato ONAPI Ordinario</span>
                 </div>
               )}
 
-              {inputMode === 'text' && (
-                <textarea
-                  value={customText}
-                  onChange={(e) => setCustomText(e.target.value)}
-                  rows={4}
-                  placeholder="Pega aquí el extracto del PDF de ONAPI con campos 'Denominación:' y 'Actividad:'..."
-                  className="w-full p-3 font-mono text-xs bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
-                />
+              {/* Mode 2: Preloaded Demo Bulletin */}
+              {inputMode === 'demo' && (
+                <div className="p-4 bg-indigo-50/50 border border-indigo-100 rounded-xl text-xs text-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0">
+                      <FileText className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <span className="font-bold text-slate-900 block">
+                        Boletín Ordinario Oficial ONAPI (Edición Nº 248-26)
+                      </span>
+                      <span className="text-[11px] text-slate-500">
+                        Contiene 10 empresas registradas en Santo Domingo, Santiago, Piantini, Punta Cana y La Vega.
+                      </span>
+                    </div>
+                  </div>
+                  <span className="text-[11px] font-mono font-semibold text-indigo-700 bg-white px-2.5 py-1 rounded border border-indigo-200 shrink-0 self-start sm:self-auto">
+                    10 Empresas
+                  </span>
+                </div>
               )}
 
-              {inputMode === 'file' && (
-                <div className="border-2 border-dashed border-slate-300 rounded-xl p-5 text-center bg-slate-50 hover:bg-slate-100 transition-colors">
-                  <UploadCloud className="w-8 h-8 text-slate-400 mx-auto mb-2" />
-                  <label className="text-xs font-semibold text-indigo-600 hover:underline cursor-pointer block">
-                    <span>Seleccionar boletín de ONAPI (.txt o .pdf)</span>
-                    <input
-                      type="file"
-                      accept=".txt,.pdf"
-                      onChange={handleFileUpload}
-                      className="hidden"
-                    />
-                  </label>
+              {/* Mode 3: Raw Text */}
+              {inputMode === 'text' && (
+                <div>
+                  <textarea
+                    value={customText}
+                    onChange={(e) => setCustomText(e.target.value)}
+                    rows={5}
+                    placeholder="Pega aquí el extracto de texto del boletín con campos 'Denominación:' y 'Actividad:'..."
+                    className="w-full p-3 font-mono text-xs bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
+                  />
                   <span className="text-[11px] text-slate-500 mt-1 block">
-                    {fileName ? `Archivo cargado: ${fileName}` : 'Formatos admitidos: TXT, texto exportado o PDF'}
+                    Copia y pega cualquier fragmento de texto del PDF o de la página de publicaciones de ONAPI.
                   </span>
                 </div>
               )}
             </div>
 
             {/* Run Action Bar */}
-            <div className="flex items-center justify-between p-3.5 bg-indigo-50/50 border border-indigo-100 rounded-xl">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between p-4 bg-gradient-to-r from-indigo-50 to-blue-50 border border-indigo-100 rounded-xl gap-3">
               <div>
                 <span className="text-xs font-bold text-indigo-950 block">
                   Ejecutar Pipeline Automatizado
                 </span>
-                <span className="text-[11px] text-indigo-700">
+                <span className="text-[11px] text-indigo-700 block">
                   Aplica extracción regex, enriquecimiento con Google Places RD y clasificación societaria DGII
                 </span>
               </div>
 
               <button
-                disabled={isRunning}
+                disabled={isRunning || isParsingFile}
                 onClick={runPipeline}
-                className="px-5 py-2.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 disabled:opacity-50 rounded-xl flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
+                className="px-5 py-2.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 disabled:opacity-50 rounded-xl flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer shrink-0"
               >
                 {isRunning ? (
                   <>
@@ -412,12 +480,92 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
               </button>
             </div>
 
+            {/* Pipeline Stage Indicators */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <div
+                className={`p-3 rounded-xl border text-xs transition-colors ${
+                  currentStep >= 1
+                    ? 'bg-indigo-50/70 border-indigo-200 text-indigo-950'
+                    : 'bg-slate-50 border-slate-200 text-slate-500'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 font-bold mb-1">
+                  <FileText className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>1. Extracción ONAPI</span>
+                </div>
+                <span className="text-[11px] text-slate-600 block">
+                  Lectura PDF / Regex
+                </span>
+              </div>
+
+              <div
+                className={`p-3 rounded-xl border text-xs transition-colors ${
+                  currentStep >= 2
+                    ? 'bg-blue-50/70 border-blue-200 text-blue-950'
+                    : 'bg-slate-50 border-slate-200 text-slate-500'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 font-bold mb-1">
+                  <Phone className="w-3.5 h-3.5 text-blue-600" />
+                  <span>2. Google Places</span>
+                </div>
+                <span className="text-[11px] text-slate-600 block">
+                  Teléfono corporativo RD
+                </span>
+              </div>
+
+              <div
+                className={`p-3 rounded-xl border text-xs transition-colors ${
+                  currentStep >= 3 || currentStep >= 2
+                    ? 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
+                    : 'bg-slate-50 border-slate-200 text-slate-500'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 font-bold mb-1">
+                  <Building className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>3. Filtro DGII</span>
+                </div>
+                <span className="text-[11px] text-slate-600 block">
+                  S.R.L. / S.A.S. / RNC
+                </span>
+              </div>
+
+              <div
+                className={`p-3 rounded-xl border text-xs transition-colors ${
+                  currentStep >= 4
+                    ? 'bg-purple-50/70 border-purple-200 text-purple-950'
+                    : 'bg-slate-50 border-slate-200 text-slate-500'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 font-bold mb-1">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-purple-600" />
+                  <span>4. Base de Datos</span>
+                </div>
+                <span className="text-[11px] text-slate-600 block">
+                  Exportar a CRM / CSV
+                </span>
+              </div>
+            </div>
+
+            {/* Progress bar */}
+            {isRunning && (
+              <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+                <div
+                  className="bg-indigo-600 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+            )}
+
             {/* Terminal Logs */}
             {logs.length > 0 && (
               <div className="bg-slate-950 text-slate-200 rounded-xl p-4 font-mono text-[11px] max-h-48 overflow-y-auto border border-slate-800 space-y-1">
-                <div className="text-slate-500 pb-1 border-b border-slate-800 flex items-center gap-1.5">
-                  <Terminal className="w-3.5 h-3.5" />
-                  <span>Terminal de Extracción & Enriquecimiento</span>
+                <div className="text-slate-500 pb-1 border-b border-slate-800 flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <Terminal className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Terminal de Extracción & Enriquecimiento</span>
+                  </div>
+                  <span className="text-[10px] text-slate-400">{logs.length} eventos</span>
                 </div>
                 {logs.map((log, idx) => (
                   <div key={idx} className="leading-relaxed">
@@ -429,41 +577,60 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
 
             {/* Output Preview Table (When completed) */}
             {isCompleted && processedClients.length > 0 && (
-              <div className="border border-slate-200 rounded-xl overflow-hidden">
-                <div className="bg-slate-50 px-4 py-2.5 border-b border-slate-200 flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-800">
-                    Vista Previa de Empresas Enriquecidas ({processedClients.length})
-                  </span>
-                  <span className="text-xs text-emerald-700 font-semibold flex items-center gap-1">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    Listo para exportar o importar
-                  </span>
+              <div className="border border-emerald-200 bg-emerald-50/30 rounded-xl p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                    <span className="text-xs font-bold text-slate-900">
+                      {processedClients.length} empresas procesadas y listas para prospección
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleExportGeneratedCSV}
+                      className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Descargar CSV</span>
+                    </button>
+
+                    <button
+                      onClick={handleCommitToCRM}
+                      className="px-4 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+                    >
+                      <span>Agregar a Base de Datos</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
 
-                <div className="max-h-60 overflow-y-auto">
-                  <table className="w-full text-left text-xs border-collapse">
-                    <thead className="bg-slate-100 text-slate-600 text-[11px] font-semibold sticky top-0">
+                <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-lg bg-white">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-medium sticky top-0">
                       <tr>
-                        <th className="py-2 px-3">Nombre Comercial</th>
-                        <th className="py-2 px-3">Tipo DGII</th>
+                        <th className="py-2 px-3">Empresa</th>
+                        <th className="py-2 px-3">Sector</th>
                         <th className="py-2 px-3">Teléfono</th>
-                        <th className="py-2 px-3">Ubicación / Dirección</th>
+                        <th className="py-2 px-3">Tipo DGII</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {processedClients.map((c) => (
-                        <tr key={c.id} className="hover:bg-slate-50">
-                          <td className="py-2 px-3 font-semibold text-slate-900 truncate max-w-[200px]">
-                            {c.name}
+                      {processedClients.map((client) => (
+                        <tr key={client.id} className="hover:bg-slate-50">
+                          <td className="py-2 px-3 font-semibold text-slate-900">
+                            {client.name}
                           </td>
-                          <td className="py-2 px-3 text-slate-700 text-[11px]">
-                            {c.dgii?.siglas}
+                          <td className="py-2 px-3 text-slate-600">
+                            {client.sector || client.industry}
                           </td>
-                          <td className="py-2 px-3 font-mono text-slate-800">
-                            {c.places?.telefonoCorporativo}
+                          <td className="py-2 px-3 font-mono text-slate-700">
+                            {client.phone}
                           </td>
-                          <td className="py-2 px-3 text-slate-600 text-[11px] truncate max-w-[250px]">
-                            {c.places?.direccionExacta}
+                          <td className="py-2 px-3">
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                              {client.dgii?.siglas || 'S.R.L.'}
+                            </span>
                           </td>
                         </tr>
                       ))}
@@ -474,46 +641,15 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
             )}
           </div>
 
-          {/* Footer Actions */}
-          <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-3">
-            <div className="text-xs text-slate-500">
-              {isCompleted ? (
-                <span className="font-semibold text-emerald-700">
-                  ✓ Pipeline finalizado: {processedClients.length} registros listos
-                </span>
-              ) : (
-                <span>Haz clic en &quot;Iniciar Pipeline&quot; para ejecutar la extracción.</span>
-              )}
-            </div>
-
-            <div className="flex items-center gap-2">
-              {isCompleted && (
-                <>
-                  <button
-                    onClick={handleExportGeneratedCSV}
-                    className="px-3.5 py-2 text-xs font-semibold text-slate-700 hover:text-slate-900 bg-white border border-slate-300 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
-                  >
-                    <Download className="w-3.5 h-3.5 text-slate-500" />
-                    <span>Descargar CSV (RD)</span>
-                  </button>
-
-                  <button
-                    onClick={handleCommitToCRM}
-                    className="px-4 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
-                  >
-                    <Database className="w-3.5 h-3.5" />
-                    <span>Importar al CRM / Base de Clientes</span>
-                  </button>
-                </>
-              )}
-
-              <button
-                onClick={onClose}
-                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
-              >
-                Cerrar
-              </button>
-            </div>
+          {/* Footer */}
+          <div className="px-6 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-xs text-slate-500">
+            <span>Compatible con boletines oficiales quincenales de ONAPI República Dominicana</span>
+            <button
+              onClick={onClose}
+              className="px-4 py-1.5 font-medium text-slate-600 hover:text-slate-900 cursor-pointer"
+            >
+              Cerrar
+            </button>
           </div>
         </div>
       </div>
