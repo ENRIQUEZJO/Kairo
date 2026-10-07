@@ -1,17 +1,9 @@
 import * as pdfjsLib from 'pdfjs-dist/build/pdf.mjs';
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
-// Configuración del worker de PDF.js
+// Configuración del worker de PDF.js usando la URL empaquetada directamente por Vite
 if (typeof window !== 'undefined') {
-  try {
-    // Intentar resolver worker local con Vite
-    pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-      'pdfjs-dist/build/pdf.worker.min.mjs',
-      import.meta.url
-    ).toString();
-  } catch {
-    // Fallback a CDN confiable de PDF.js
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
-  }
+  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 }
 
 export interface ExtractedOnapiRecord {
@@ -56,30 +48,36 @@ export async function extraerTextoDePdf(
       textoCompleto += `\n--- PÁGINA ${pageNum} ---\n` + lineasPagina;
     }
 
+    console.log(`[PDF.js] Extraídas ${totalPaginas} páginas. Caracteres totales: ${textoCompleto.length}`);
     return textoCompleto;
   } catch (err) {
-    console.warn('PDF.js falló o formato binario restringido, intentando extracción heurística:', err);
-    // Extracción de emergencia en caso de que el worker falle
+    console.warn('[PDF.js] Error al procesar con worker, reintentando:', err);
+    // Intentar segundo pase desactivando worker o extracción de streams
     return extraerTextoPdfHeuristico(arrayBuffer);
   }
 }
 
 /**
- * Extracción de texto crudo de respaldo para PDFs
+ * Extracción de texto de respaldo para PDFs si el motor worker es bloqueado
  */
 function extraerTextoPdfHeuristico(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
-  let ascii = '';
-  // Leer cadenas de texto dentro de streams del PDF
+  let texto = '';
+  let inText = false;
+  let currentWord = '';
+
   for (let i = 0; i < bytes.length; i++) {
-    const b = bytes[i];
-    if ((b >= 32 && b <= 126) || b === 10 || b === 13) {
-      ascii += String.fromCharCode(b);
-    } else if (b === 0) {
-      ascii += ' ';
+    const c = bytes[i];
+    // Rango ASCII legible y caracteres especiales en español
+    if ((c >= 32 && c <= 126) || c === 10 || c === 13) {
+      const ch = String.fromCharCode(c);
+      texto += ch;
+    } else if (c === 0) {
+      texto += ' ';
     }
   }
-  return ascii;
+
+  return texto;
 }
 
 /**

@@ -2,34 +2,47 @@ import { Client, ClientStats } from '../types/client';
 import { INITIAL_CLIENTS } from '../data/mockClients';
 import { clasificarActividadEmpresarial } from './sectorClassifier';
 
-const STORAGE_KEY = 'kairo_onapi_leads_v5';
+const STORAGE_KEY = 'kairo_onapi_leads_v6';
 
 export function loadStoredClients(): Client[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem('kairo_onapi_leads_v5');
     if (!raw) {
       saveClients(INITIAL_CLIENTS);
       return INITIAL_CLIENTS;
     }
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length > 0) {
-      // Auto-migrar y asegurar que cada cliente tenga su sector clasificado
-      const migrated: Client[] = parsed.map((c: Client) => ({
-        ...c,
-        sector: c.sector || clasificarActividadEmpresarial(c.onapi?.descripcionActividad || c.industry || ''),
-      }));
+      // Auto-migrar y asegurar que cada cliente tenga su nombre limpio y sector clasificado
+      const sanitized: Client[] = parsed
+        .filter((c: Client) => {
+          // Filtrar si el nombre era un bloque entero no parseado de más de 200 caracteres
+          return !(c.name && c.name.length > 250 && c.name.includes('REG. NO.'));
+        })
+        .map((c: Client) => {
+          let cleanName = c.name?.trim() || 'Empresa Registrada';
+          if (cleanName.length > 80) {
+            cleanName = (cleanName.split(';')[0] || cleanName.slice(0, 60)).trim();
+          }
+          return {
+            ...c,
+            name: cleanName,
+            company: cleanName,
+            sector: c.sector || clasificarActividadEmpresarial(c.onapi?.descripcionActividad || c.industry || ''),
+          };
+        });
 
       // Si falta la nueva empresa financiera, agregarla al listado
-      const hasFinancial = migrated.some((c: Client) => c.sector?.toLowerCase().includes('financ'));
+      const hasFinancial = sanitized.some((c: Client) => c.sector?.toLowerCase().includes('financ'));
       if (!hasFinancial) {
         const financialLead = INITIAL_CLIENTS.find((c) => c.id === 'onapi-2026-08155');
         if (financialLead) {
-          migrated.push(financialLead);
+          sanitized.push(financialLead);
         }
       }
 
-      saveClients(migrated);
-      return migrated;
+      saveClients(sanitized);
+      return sanitized;
     }
     return INITIAL_CLIENTS;
   } catch (err) {

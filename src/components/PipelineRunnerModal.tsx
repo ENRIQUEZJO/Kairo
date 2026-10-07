@@ -331,6 +331,21 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
                 </div>
               </div>
 
+              {/* Informative Guidance Banner */}
+              <div className="bg-amber-50/80 border border-amber-200/90 rounded-xl p-3 text-xs text-amber-900 flex items-start gap-2.5">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <span className="font-bold text-amber-950 block">
+                    ¿Cuál documento descargar en ONAPI (onapi.gob.do)?
+                  </span>
+                  <span className="text-[11px] text-amber-800 leading-relaxed block">
+                    Para captar nuevos clientes con empresas recién fundadas, en el portal de ONAPI descarga el Boletín Oficial en la sección{' '}
+                    <strong>"Nombres Comerciales - Solicitudes"</strong> (las nuevas S.R.L., S.A.S. y E.I.R.L.). Si subes un extracto de{' '}
+                    <strong>Lemas Comerciales o Signos Distintivos</strong> (como eslóganes), nuestro motor inteligente ahora también lo divide y extrae cada empresa por separado.
+                  </span>
+                </div>
+              </div>
+
               {/* Mode 1: File Upload (PDF, CSV, TXT) */}
               {inputMode === 'file' && (
                 <div>
