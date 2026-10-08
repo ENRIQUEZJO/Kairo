@@ -2,23 +2,40 @@ import { Client, ClientStats } from '../types/client';
 import { INITIAL_CLIENTS } from '../data/mockClients';
 import { clasificarActividadEmpresarial } from './sectorClassifier';
 
-const STORAGE_KEY = 'kairo_onapi_leads_v6';
+const STORAGE_KEY = 'kairo_onapi_leads_v7';
+
+// IDs del boletín demo de 10 empresas para remover
+const DEMO_IDS = new Set([
+  'onapi-2026-08149',
+  'onapi-2026-08150',
+  'onapi-2026-08151',
+  'onapi-2026-08152',
+  'onapi-2026-08153',
+  'onapi-2026-08154',
+  'onapi-2026-08155',
+  'onapi-2026-08156',
+  'onapi-2026-08157',
+  'onapi-2026-08158',
+]);
 
 export function loadStoredClients(): Client[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem('kairo_onapi_leads_v5');
+    const raw =
+      localStorage.getItem(STORAGE_KEY) ||
+      localStorage.getItem('kairo_onapi_leads_v6') ||
+      localStorage.getItem('kairo_onapi_leads_v5');
+
     if (!raw) {
-      saveClients(INITIAL_CLIENTS);
-      return INITIAL_CLIENTS;
+      saveClients([]);
+      return [];
     }
+
     const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      // Auto-migrar y asegurar que cada cliente tenga su nombre limpio y sector clasificado
+    if (Array.isArray(parsed)) {
+      // Filtrar y remover las 10 empresas del boletín demo
       const sanitized: Client[] = parsed
-        .filter((c: Client) => {
-          // Filtrar si el nombre era un bloque entero no parseado de más de 200 caracteres
-          return !(c.name && c.name.length > 250 && c.name.includes('REG. NO.'));
-        })
+        .filter((c: Client) => !DEMO_IDS.has(c.id))
+        .filter((c: Client) => !(c.name && c.name.length > 250 && c.name.includes('REG. NO.')))
         .map((c: Client) => {
           let cleanName = c.name?.trim() || 'Empresa Registrada';
           if (cleanName.length > 80) {
@@ -32,22 +49,13 @@ export function loadStoredClients(): Client[] {
           };
         });
 
-      // Si falta la nueva empresa financiera, agregarla al listado
-      const hasFinancial = sanitized.some((c: Client) => c.sector?.toLowerCase().includes('financ'));
-      if (!hasFinancial) {
-        const financialLead = INITIAL_CLIENTS.find((c) => c.id === 'onapi-2026-08155');
-        if (financialLead) {
-          sanitized.push(financialLead);
-        }
-      }
-
       saveClients(sanitized);
       return sanitized;
     }
-    return INITIAL_CLIENTS;
+    return [];
   } catch (err) {
     console.error('Error reading clients from localStorage:', err);
-    return INITIAL_CLIENTS;
+    return [];
   }
 }
 
@@ -60,8 +68,13 @@ export function saveClients(clients: Client[]): void {
 }
 
 export function resetToDemoClients(): Client[] {
-  saveClients(INITIAL_CLIENTS);
-  return INITIAL_CLIENTS;
+  saveClients([]);
+  return [];
+}
+
+export function clearDatabase(): Client[] {
+  saveClients([]);
+  return [];
 }
 
 export function calculateStats(clients: Client[]): ClientStats {

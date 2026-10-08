@@ -5,6 +5,7 @@ import {
   loadStoredClients,
   saveClients,
   resetToDemoClients,
+  clearDatabase,
   calculateStats,
   exportClientsToCSV,
 } from './utils/storage';
@@ -119,12 +120,12 @@ export default function App() {
   };
 
   const handleResetData = () => {
-    if (window.confirm('¿Deseas restaurar la lista original de empresas dominicanas de ONAPI?')) {
-      const reset = resetToDemoClients();
+    if (window.confirm('¿Deseas vaciar la base de datos por completo para comenzar desde cero con tu propio archivo de ONAPI?')) {
+      const reset = clearDatabase();
       setClients(reset);
       setSelectedClient(null);
       setFilters(INITIAL_FILTERS);
-      showToast('Datos demo restaurados');
+      showToast('Base de datos vaciada. Lista para importar tus empresas.');
     }
   };
 
@@ -265,6 +266,7 @@ export default function App() {
           onSelectClient={setSelectedClient}
           onDeleteClients={handleDeleteClients}
           onResetFilters={handleResetFilters}
+          onOpenUploadModal={() => setIsPipelineOpen(true)}
         />
       </main>
 

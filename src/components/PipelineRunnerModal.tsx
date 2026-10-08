@@ -38,7 +38,7 @@ interface PipelineRunnerModalProps {
   onImportToClients: (newClients: Client[]) => void;
   onOpenPythonModal: () => void;
   advisors: Advisor[];
-  initialMode?: 'file' | 'demo' | 'text';
+  initialMode?: 'file' | 'text';
 }
 
 export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
@@ -51,8 +51,8 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
 }) => {
   if (!isOpen) return null;
 
-  const [inputMode, setInputMode] = useState<'file' | 'demo' | 'text'>(initialMode);
-  const [customText, setCustomText] = useState(SAMPLE_ONAPI_RAW_BULLETIN_TEXT);
+  const [inputMode, setInputMode] = useState<'file' | 'text'>(initialMode);
+  const [customText, setCustomText] = useState('');
   const [fileName, setFileName] = useState<string | null>(null);
   const [fileSize, setFileSize] = useState<string | null>(null);
   const [isParsingFile, setIsParsingFile] = useState(false);
@@ -311,15 +311,6 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
                     <span>Subir Archivo (PDF/CSV/TXT)</span>
                   </button>
                   <button
-                    onClick={() => setInputMode('demo')}
-                    className={`px-3 py-1 text-xs font-semibold rounded-md transition-colors cursor-pointer flex items-center gap-1.5 ${
-                      inputMode === 'demo' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                    <span>Boletín Demo (10 Empresas)</span>
-                  </button>
-                  <button
                     onClick={() => setInputMode('text')}
                     className={`px-3 py-1 text-xs font-semibold rounded-md transition-colors cursor-pointer flex items-center gap-1.5 ${
                       inputMode === 'text' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
@@ -426,29 +417,7 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
                 </div>
               )}
 
-              {/* Mode 2: Preloaded Demo Bulletin */}
-              {inputMode === 'demo' && (
-                <div className="p-4 bg-indigo-50/50 border border-indigo-100 rounded-xl text-xs text-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0">
-                      <FileText className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <span className="font-bold text-slate-900 block">
-                        Boletín Ordinario Oficial ONAPI (Edición Nº 248-26)
-                      </span>
-                      <span className="text-[11px] text-slate-500">
-                        Contiene 10 empresas registradas en Santo Domingo, Santiago, Piantini, Punta Cana y La Vega.
-                      </span>
-                    </div>
-                  </div>
-                  <span className="text-[11px] font-mono font-semibold text-indigo-700 bg-white px-2.5 py-1 rounded border border-indigo-200 shrink-0 self-start sm:self-auto">
-                    10 Empresas
-                  </span>
-                </div>
-              )}
-
-              {/* Mode 3: Raw Text */}
+              {/* Mode 2: Raw Text */}
               {inputMode === 'text' && (
                 <div>
                   <textarea

@@ -109,11 +109,11 @@ export const TopBar: React.FC<TopBarProps> = ({
               <span className="hidden sm:inline">Manual</span>
             </button>
 
-            {/* Demo Reset */}
+            {/* Clear Database */}
             <button
               onClick={onResetData}
-              title="Restaurar datos demo"
-              className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer shrink-0"
+              title="Vaciar base de datos (Comenzar desde cero)"
+              className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer shrink-0"
             >
               <RotateCcw className="w-3.5 h-3.5" />
             </button>
