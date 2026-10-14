@@ -222,7 +222,8 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
 
       const stepProgress = 25 + Math.round(((i + 1) / total) * 65);
       setProgress(stepProgress);
-      await new Promise((r) => setTimeout(r, 200));
+      const delay = total > 50 ? 20 : total > 20 ? 60 : 120;
+      await new Promise((r) => setTimeout(r, delay));
     }
 
     // ==========================================

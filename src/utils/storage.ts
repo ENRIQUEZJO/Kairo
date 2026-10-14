@@ -38,13 +38,36 @@ export function loadStoredClients(): Client[] {
         .filter((c: Client) => !(c.name && c.name.length > 250 && c.name.includes('REG. NO.')))
         .map((c: Client) => {
           let cleanName = c.name?.trim() || 'Empresa Registrada';
+          let regNo = c.onapi?.registroNo;
+
+          const regPrefixMatch = cleanName.match(
+            /^(?:REGISTRO|REG|SOLICITUD|EXPEDIENTE)\s*(?:N[ºo]?|NO\.?|NUMERO)?\s*[:\-]?\s*([0-9\-\/]+)\s+(.+)$/i
+          );
+          if (regPrefixMatch) {
+            regNo = regPrefixMatch[1].trim();
+            cleanName = regPrefixMatch[2].trim();
+          }
+
+          cleanName = cleanName
+            .replace(/^(?:REGISTRO|REG|SOLICITUD|EXPEDIENTE)\s*(?:N[ºo]?|NO\.?|NUMERO)?\s*[:\-]?\s*[0-9\-\/]*\s*/i, '')
+            .replace(/^(?:LEMA\s+COMERCIAL|SIGNO\s+DISTINTIVO|NOMBRE\s+COMERCIAL|DENOMINACI[OÓ]N)\s*[:\-]?\s*/i, '')
+            .trim();
+
           if (cleanName.length > 80) {
             cleanName = (cleanName.split(';')[0] || cleanName.slice(0, 60)).trim();
           }
+
           return {
             ...c,
             name: cleanName,
             company: cleanName,
+            onapi: c.onapi
+              ? {
+                  ...c.onapi,
+                  denominacion: cleanName,
+                  registroNo: regNo || c.onapi.registroNo,
+                }
+              : undefined,
             sector: c.sector || clasificarActividadEmpresarial(c.onapi?.descripcionActividad || c.industry || ''),
           };
         });

@@ -91,11 +91,18 @@ export const ClientDrawer: React.FC<ClientDrawerProps> = ({
     `Saludos cordiales, le escribo respecto al registro de ${client.name} en el boletín de ONAPI. Quisiéramos presentarle nuestros servicios de apoyo corporativo.`
   )}`;
 
-  const mapsUrl =
-    client.places?.googleMapsUrl ||
-    `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
-      `${client.name}, Republica Dominicana`
-    )}`;
+  const cleanNombreParaMaps = client.name
+    .replace(/^(?:REGISTRO|REG|SOLICITUD|EXPEDIENTE)\s*(?:N[ºo]?|NO\.?|NUMERO)?\s*[:\-]?\s*[0-9\-\/]*\s*/i, '')
+    .replace(/\b(S\.?R\.?L\.?|S\.?A\.?S\.?|E\.?I\.?R\.?L\.?|S\.?A\.)\b/gi, '')
+    .replace(/[,\.\-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const direccionOMunicipio = client.places?.direccionExacta || client.provincia || client.city || 'Santo Domingo';
+
+  const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+    `${cleanNombreParaMaps || client.name}, ${direccionOMunicipio}, República Dominicana`
+  )}`;
 
   return (
     <div className="fixed inset-0 z-50 overflow-hidden">

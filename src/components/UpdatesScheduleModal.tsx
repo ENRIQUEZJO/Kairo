@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   X,
   Calendar,
@@ -13,7 +13,8 @@ import {
   ShieldCheck,
   Zap,
 } from 'lucide-react';
-import { ENTITY_SCHEDULES, RECENT_BULLETINS_HISTORY } from '../data/calendarSchedule';
+import { ENTITY_SCHEDULES } from '../data/calendarSchedule';
+import { obtenerCalendarioOnapiDinamico } from '../utils/calendarEngine';
 
 interface UpdatesScheduleModalProps {
   isOpen: boolean;
@@ -28,8 +29,9 @@ export const UpdatesScheduleModal: React.FC<UpdatesScheduleModalProps> = ({
 }) => {
   if (!isOpen) return null;
 
+  const schedule = useMemo(() => obtenerCalendarioOnapiDinamico(), []);
   const [checking, setChecking] = useState(false);
-  const [lastCheckTime, setLastCheckTime] = useState<string>('Hace 5 minutos');
+  const [lastCheckTime, setLastCheckTime] = useState<string>('Hace 2 minutos');
   const [checkStatus, setCheckStatus] = useState<string | null>(null);
 
   const handleCheckNow = () => {
@@ -37,9 +39,10 @@ export const UpdatesScheduleModal: React.FC<UpdatesScheduleModalProps> = ({
     setCheckStatus(null);
     setTimeout(() => {
       setChecking(false);
-      setLastCheckTime('Ahora mismo (28/09/2026 ' + new Date().toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' }) + ')');
-      setCheckStatus('Portal de ONAPI verificado: La Edición Nº 248 está vigente. La Edición Nº 249 está programada para el 30 de septiembre a las 11:30 AM.');
-    }, 1200);
+      const horaStr = new Date().toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' });
+      setLastCheckTime(`Hoy a las ${horaStr}`);
+      setCheckStatus(`Portal de ONAPI verificado: La Edición Nº ${schedule.edicionProxima - 1} está vigente. La Edición Nº ${schedule.edicionProxima} está programada para el ${schedule.proximaFechaTexto} a las 11:30 AM.`);
+    }, 1000);
   };
 
   return (
@@ -59,7 +62,7 @@ export const UpdatesScheduleModal: React.FC<UpdatesScheduleModalProps> = ({
                   Calendario de Publicaciones y Actualizaciones: ONAPI & DGII
                 </h3>
                 <p className="text-xs text-slate-500">
-                  Monitoreo de fechas, horarios oficiales y periodicidad de subida de nuevas empresas en República Dominicana
+                  Monitoreo automático de fechas, horarios oficiales y periodicidad de subida de nuevas empresas en República Dominicana
                 </p>
               </div>
             </div>
@@ -80,10 +83,10 @@ export const UpdatesScheduleModal: React.FC<UpdatesScheduleModalProps> = ({
                 <div className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse" />
                 <div>
                   <div className="text-xs font-bold text-slate-900">
-                    Próxima subida de empresas en ONAPI: <span className="text-indigo-700">30 de Septiembre de 2026</span>
+                    Próxima subida de empresas en ONAPI: <span className="text-indigo-700 font-extrabold">{schedule.proximaFechaTexto}</span>
                   </div>
                   <div className="text-[11px] text-slate-500">
-                    Frecuencia quincenal oficial (Días 15 y 30 de cada mes) · Última verificación: {lastCheckTime}
+                    Frecuencia quincenal oficial (Días 15 y 30/31 de cada mes) · {schedule.etiquetaCapsula} · Última verificación: {lastCheckTime}
                   </div>
                 </div>
               </div>
@@ -107,57 +110,62 @@ export const UpdatesScheduleModal: React.FC<UpdatesScheduleModalProps> = ({
 
             {/* Entity Cards Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {ENTITY_SCHEDULES.map((schedule) => (
-                <div
-                  key={schedule.siglas}
-                  className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs hover:border-slate-300 transition-colors flex flex-col justify-between"
-                >
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-bold px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
-                          {schedule.siglas}
+              {ENTITY_SCHEDULES.map((sched) => {
+                const isONAPI = sched.siglas === 'ONAPI';
+                const proxFecha = isONAPI ? schedule.proximaFechaTexto : sched.proximaFechaEstimada;
+                const diasRest = isONAPI ? schedule.diasRestantes : sched.diasRestantes;
+                return (
+                  <div
+                    key={sched.siglas}
+                    className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs hover:border-slate-300 transition-colors flex flex-col justify-between"
+                  >
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
+                            {sched.siglas}
+                          </span>
+                          <h4 className="text-sm font-bold text-slate-900">{sched.entidad}</h4>
+                        </div>
+                        <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                          {sched.frecuencia}
                         </span>
-                        <h4 className="text-sm font-bold text-slate-900">{schedule.entidad}</h4>
-                      </div>
-                      <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                        {schedule.frecuencia}
-                      </span>
-                    </div>
-
-                    <p className="text-xs text-slate-500 mb-3">{schedule.nombreCompleto}</p>
-
-                    <div className="space-y-2 text-xs pt-2 border-t border-slate-100">
-                      <div className="flex justify-between items-start">
-                        <span className="text-slate-500">Días de Publicación:</span>
-                        <span className="font-semibold text-slate-800 text-right">{schedule.diasPublicacion}</span>
                       </div>
 
-                      <div className="flex justify-between items-start">
-                        <span className="text-slate-500">Horario Habitual:</span>
-                        <span className="font-semibold text-slate-800 text-right">{schedule.horarioHabitual}</span>
-                      </div>
+                      <p className="text-xs text-slate-500 mb-3">{sched.nombreCompleto}</p>
 
-                      <div className="flex justify-between items-start">
-                        <span className="text-slate-500">Próxima Fecha:</span>
-                        <span className="font-bold text-indigo-700 text-right">{schedule.proximaFechaEstimada}</span>
-                      </div>
+                      <div className="space-y-2 text-xs pt-2 border-t border-slate-100">
+                        <div className="flex justify-between items-start">
+                          <span className="text-slate-500">Días de Publicación:</span>
+                          <span className="font-semibold text-slate-800 text-right">{sched.diasPublicacion}</span>
+                        </div>
 
-                      <div className="flex justify-between items-start">
-                        <span className="text-slate-500">Formato Oficial:</span>
-                        <span className="text-slate-700 font-mono text-[11px] text-right">{schedule.formatoArchivo}</span>
+                        <div className="flex justify-between items-start">
+                          <span className="text-slate-500">Horario Habitual:</span>
+                          <span className="font-semibold text-slate-800 text-right">{sched.horarioHabitual}</span>
+                        </div>
+
+                        <div className="flex justify-between items-start">
+                          <span className="text-slate-500">Próxima Fecha:</span>
+                          <span className="font-bold text-indigo-700 text-right">{proxFecha} ({diasRest === 0 ? 'Hoy' : diasRest === 1 ? 'Mañana' : `En ${diasRest} días`})</span>
+                        </div>
+
+                        <div className="flex justify-between items-start">
+                          <span className="text-slate-500">Formato Oficial:</span>
+                          <span className="text-slate-700 font-mono text-[11px] text-right">{sched.formatoArchivo}</span>
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  <div className="mt-4 pt-3 border-t border-slate-100 bg-slate-50 -mx-4 -mb-4 p-3 rounded-b-xl">
-                    <div className="flex items-start gap-1.5 text-[11px] text-slate-600">
-                      <Lightbulb className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
-                      <span>{schedule.recomendacionScraping}</span>
+                    <div className="mt-4 pt-3 border-t border-slate-100 bg-slate-50 -mx-4 -mb-4 p-3 rounded-b-xl">
+                      <div className="flex items-start gap-1.5 text-[11px] text-slate-600">
+                        <Lightbulb className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+                        <span>{sched.recomendacionScraping}</span>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* Ciclo de Vida: Desde ONAPI hasta DGII */}
@@ -225,7 +233,7 @@ export const UpdatesScheduleModal: React.FC<UpdatesScheduleModalProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {RECENT_BULLETINS_HISTORY.map((item) => (
+                    {schedule.historialYProximos.map((item) => (
                       <tr key={item.id} className="hover:bg-slate-50/70 transition-colors">
                         <td className="py-2.5 px-3">
                           <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
@@ -243,12 +251,16 @@ export const UpdatesScheduleModal: React.FC<UpdatesScheduleModalProps> = ({
                           {item.fechaPublicacion} ({item.horaAproximada})
                         </td>
                         <td className="py-2.5 px-3 font-mono text-slate-700 font-semibold tabular-nums">
-                          ~{item.totalEmpresas} registros
+                          ~{item.totalEmpresasEstimadas} registros
                         </td>
                         <td className="py-2.5 px-3 text-right">
                           {item.estado === 'proximo' ? (
                             <span className="text-[11px] font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
-                              En preparación (30 Sep)
+                              {item.etiquetaCuentaRegresiva}
+                            </span>
+                          ) : item.estado === 'programado' ? (
+                            <span className="text-[11px] font-semibold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200">
+                              Programado
                             </span>
                           ) : (
                             <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
@@ -267,7 +279,7 @@ export const UpdatesScheduleModal: React.FC<UpdatesScheduleModalProps> = ({
           {/* Footer Actions */}
           <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-3">
             <span className="text-xs text-slate-500">
-              Próximo boletín oficial de ONAPI previsto para el <strong>30 de Septiembre de 2026</strong>.
+              Próximo boletín oficial de ONAPI previsto para el <strong>{schedule.proximaFechaTexto}</strong> ({schedule.etiquetaCapsula}).
             </span>
 
             <div className="flex items-center gap-2">

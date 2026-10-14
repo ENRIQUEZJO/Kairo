@@ -31,6 +31,23 @@ export function extraerDatosOnapiTexto(texto: string): {
       .trim()
       .toUpperCase();
 
+    // 1. Extraer número de registro si viene pegado al nombre (ej: "REGISTRO NO. 345699 PASTEURIZADORA RICA, S.A.")
+    const regPrefixMatch = cleanNombre.match(/^(?:REGISTRO|REG|SOLICITUD|EXPEDIENTE)\s*(?:N[ºo]?|NO\.?|NUMERO)?\s*[:\-]?\s*([0-9\-\/]+)\s+(.+)$/i);
+    if (regPrefixMatch) {
+      if (!registroNo || registroNo.startsWith('2026-8')) {
+        registroNo = regPrefixMatch[1].trim();
+      }
+      cleanNombre = regPrefixMatch[2].trim();
+    }
+
+    // 2. Limpiar cualquier prefijo de control o números residuales
+    cleanNombre = cleanNombre
+      .replace(/^(?:REGISTRO|REG|SOLICITUD|EXPEDIENTE)\s*(?:N[ºo]?|NO\.?|NUMERO)?\s*[:\-]?\s*[0-9\-\/]*\s*/i, '')
+      .replace(/^(?:LEMA\s+COMERCIAL|SIGNO\s+DISTINTIVO|NOMBRE\s+COMERCIAL|DENOMINACI[OÓ]N)\s*[:\-]?\s*/i, '')
+      .replace(/^[\s\d\.\:\;\-\,\*#\(\)]+/, '')
+      .replace(/[\s\.\:\;\-\,\*#\(\)]+$/, '')
+      .trim();
+
     // Eliminar palabras de control de ONAPI que puedan haberse colado
     if (
       cleanNombre.startsWith('SOLICITUD') ||
@@ -240,6 +257,12 @@ export function obtenerContactoGoogle(nombreEmpresa: string): GooglePlacesEnrich
   // Búsqueda en base de datos de comercios y empresas dominicanas
   if (DOMINICAN_PLACES_DATABASE[norm]) {
     const found = DOMINICAN_PLACES_DATABASE[norm];
+    const cleanFoundName = norm
+      .replace(/\b(S\.?R\.?L\.?|S\.?A\.?S\.?|E\.?I\.?R\.?L\.?|S\.?A\.)\b/gi, '')
+      .replace(/[,\.\-]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
     return {
       encontrado: true,
       telefonoCorporativo: found.telefono,
@@ -247,7 +270,7 @@ export function obtenerContactoGoogle(nombreEmpresa: string): GooglePlacesEnrich
       rating: found.rating,
       municipio: found.provincia,
       googleMapsUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
-        `${norm}, Republica Dominicana`
+        `${cleanFoundName || norm}, ${found.provincia}, República Dominicana`
       )}`,
     };
   }
@@ -263,6 +286,13 @@ export function obtenerContactoGoogle(nombreEmpresa: string): GooglePlacesEnrich
   const hash = Math.abs(nombreEmpresa.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0));
   const picked = zonasRD[hash % zonasRD.length];
 
+  const cleanNombreParaMaps = nombreEmpresa
+    .replace(/^(?:REGISTRO|REG|SOLICITUD|EXPEDIENTE)\s*(?:N[ºo]?|NO\.?|NUMERO)?\s*[:\-]?\s*[0-9\-\/]*\s*/i, '')
+    .replace(/\b(S\.?R\.?L\.?|S\.?A\.?S\.?|E\.?I\.?R\.?L\.?|S\.?A\.)\b/gi, '')
+    .replace(/[,\.\-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
   return {
     encontrado: true,
     telefonoCorporativo: picked.tel,
@@ -270,7 +300,7 @@ export function obtenerContactoGoogle(nombreEmpresa: string): GooglePlacesEnrich
     rating: 4.5 + (hash % 6) / 10,
     municipio: picked.mun,
     googleMapsUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
-      `${nombreEmpresa}, Republica Dominicana`
+      `${cleanNombreParaMaps || nombreEmpresa}, ${picked.mun}, República Dominicana`
     )}`,
   };
 }
