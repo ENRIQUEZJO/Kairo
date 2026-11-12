@@ -6,21 +6,21 @@ import {
   obtenerTipoEmpresaDgii,
   convertirRegistroACliente,
 } from '../utils/pipelineEngine';
-import { extraerTextoDePdf, extraerEmpresasDeCSV, ExtractedOnapiRecord } from '../utils/pdfExtractor';
+import {
+  extraerTextoDePdfDetallado,
+  extraerEmpresasDeCSV,
+  ExtractedOnapiRecord,
+} from '../utils/pdfExtractor';
 import { exportClientsToCSV } from '../utils/storage';
-import { SAMPLE_ONAPI_RAW_BULLETIN_TEXT } from '../data/mockOnapiBoletin';
 import {
   X,
   Play,
   FileText,
   Building,
-  MapPin,
-  FileCheck,
   CheckCircle2,
   Terminal,
   Download,
   Database,
-  Sparkles,
   ArrowRight,
   UploadCloud,
   Code2,
@@ -30,6 +30,7 @@ import {
   FileType,
   AlertCircle,
   FileCheck2,
+  Bot,
 } from 'lucide-react';
 
 interface PipelineRunnerModalProps {
@@ -38,7 +39,14 @@ interface PipelineRunnerModalProps {
   onImportToClients: (newClients: Client[]) => void;
   onOpenPythonModal: () => void;
   advisors: Advisor[];
-  initialMode?: 'file' | 'text';
+  initialMode?: 'file' | 'text' | 'sync';
+}
+
+interface SyncPayload {
+  updatedAt?: string;
+  bulletinTitle?: string;
+  totalRecords?: number;
+  records?: ExtractedOnapiRecord[];
 }
 
 export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
@@ -46,20 +54,22 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
   onClose,
   onImportToClients,
   onOpenPythonModal,
-  advisors,
   initialMode = 'file',
 }) => {
-  if (!isOpen) return null;
-
-  const [inputMode, setInputMode] = useState<'file' | 'text'>(initialMode);
+  const [inputMode, setInputMode] = useState<'file' | 'text' | 'sync'>(initialMode);
   const [customText, setCustomText] = useState('');
   const [fileName, setFileName] = useState<string | null>(null);
   const [fileSize, setFileSize] = useState<string | null>(null);
   const [isParsingFile, setIsParsingFile] = useState(false);
   const [parsingProgress, setParsingProgress] = useState<string | null>(null);
   const [parsedRecords, setParsedRecords] = useState<ExtractedOnapiRecord[] | null>(null);
+  const [fileWarning, setFileWarning] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Sync state
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncInfo, setSyncInfo] = useState<{ status: 'idle' | 'ok' | 'empty'; message: string } | null>(null);
 
   // Execution state
   const [isRunning, setIsRunning] = useState(false);
@@ -68,6 +78,8 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
   const [logs, setLogs] = useState<string[]>([]);
   const [processedClients, setProcessedClients] = useState<Client[]>([]);
   const [isCompleted, setIsCompleted] = useState(false);
+
+  if (!isOpen) return null;
 
   const appendLog = (msg: string) => {
     setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString('es-DO')}] ${msg}`]);
@@ -78,6 +90,9 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
     setFileName(file.name);
     setFileSize(`${(file.size / 1024).toFixed(1)} KB`);
     setParsedRecords(null);
+    setFileWarning(null);
+    setIsCompleted(false);
+    setProcessedClients([]);
     setLogs([]);
     appendLog(`Leyendo archivo seleccionado: "${file.name}" (${(file.size / 1024).toFixed(1)} KB)...`);
 
@@ -86,18 +101,50 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
 
       // 1. Archivo PDF
       if (ext === 'pdf' || file.type.includes('pdf')) {
-        appendLog('📄 Detectado archivo PDF oficial de ONAPI. Extrayendo texto por páginas...');
-        setParsingProgress('Iniciando lector de PDF...');
+        appendLog('📄 Detectado archivo PDF oficial de ONAPI. Extrayendo texto con preservación de filas...');
+        setParsingProgress('Iniciando lector PDF.js...');
 
-        const textoExtraido = await extraerTextoDePdf(file, (paginaActual, totalPaginas) => {
+        const pdfResult = await extraerTextoDePdfDetallado(file, (paginaActual, totalPaginas) => {
           setParsingProgress(`Analizando página ${paginaActual} de ${totalPaginas}...`);
-          appendLog(`    -> Página ${paginaActual}/${totalPaginas} procesada`);
+          if (paginaActual === 1 || paginaActual === totalPaginas || paginaActual % 20 === 0) {
+            appendLog(`    -> Página ${paginaActual}/${totalPaginas} procesada`);
+          }
         });
 
-        setCustomText(textoExtraido);
-        const empresas = extraerDatosOnapiTexto(textoExtraido);
+        appendLog(
+          `[i] Páginas leídas: ${pdfResult.totalPaginas} (${pdfResult.paginasConTexto} con texto) · ${pdfResult.caracteresTotales.toLocaleString('es-DO')} caracteres extraídos.`
+        );
+
+        if (pdfResult.esImagenEscaneada) {
+          const aviso =
+            'El PDF parece estar escaneado como imágenes sin capa de texto seleccionable. Descarga el PDF digital oficial de onapi.gob.do o exporta el texto antes de subirlo.';
+          setFileWarning(aviso);
+          appendLog(`[!] ${aviso}`);
+          setParsedRecords([]);
+          setCustomText(pdfResult.texto);
+          return;
+        }
+
+        setCustomText(pdfResult.texto);
+        const empresas = extraerDatosOnapiTexto(pdfResult.texto);
         setParsedRecords(empresas);
-        appendLog(`[✓] Extracción del PDF finalizada. Se detectaron ${empresas.length} registros empresariales.`);
+
+        if (empresas.length > 0) {
+          appendLog(`[✓] Extracción del PDF finalizada. Se detectaron ${empresas.length} empresas.`);
+        } else {
+          const muestra = pdfResult.texto
+            .replace(/---\s*PÁGINA\s+\d+\s*---/g, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 220);
+          setFileWarning(
+            'Se leyó el texto del PDF pero no coincidió con registros empresariales estándar. Revisa la muestra en la terminal.'
+          );
+          appendLog('[!] 0 empresas detectadas tras analizar el texto extraído.');
+          if (muestra) {
+            appendLog(`[i] Muestra del texto leído: "${muestra}..."`);
+          }
+        }
       }
       // 2. Archivo CSV
       else if (ext === 'csv' || file.type.includes('csv')) {
@@ -109,15 +156,22 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
           setCustomText(texto);
           appendLog(`[✓] Archivo CSV procesado: ${empresasCSV.length} empresas identificadas.`);
         } else {
-          // Fallback a regex
           const fallback = extraerDatosOnapiTexto(texto);
           setParsedRecords(fallback);
           setCustomText(texto);
           appendLog(`[✓] Procesado como texto delimitado: ${fallback.length} empresas encontradas.`);
         }
       }
-      // 3. Archivo TXT o similar
-      else {
+      // 3. Archivo TXT o JSON
+      else if (ext === 'json' || file.type.includes('json')) {
+        appendLog('📦 Detectado archivo JSON sincronizado...');
+        const texto = await file.text();
+        const parsed = JSON.parse(texto);
+        const arr: ExtractedOnapiRecord[] = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.records) ? parsed.records : [];
+        setParsedRecords(arr);
+        setCustomText(texto);
+        appendLog(`[✓] Archivo JSON procesado: ${arr.length} empresas identificadas.`);
+      } else {
         appendLog('📝 Leyendo contenido de texto...');
         const texto = await file.text();
         setCustomText(texto);
@@ -127,10 +181,62 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
       }
     } catch (err: any) {
       console.error('Error procesando archivo:', err);
-      appendLog(`[!] Error al procesar archivo: ${err.message || 'Formato no soportado'}`);
+      const errMsg = err?.message || 'Formato no soportado o archivo dañado';
+      setFileWarning(errMsg);
+      appendLog(`[!] Error al procesar archivo: ${errMsg}`);
     } finally {
       setIsParsingFile(false);
       setParsingProgress(null);
+    }
+  };
+
+  const handleSyncFromServer = async () => {
+    setIsSyncing(true);
+    setSyncInfo(null);
+    setFileWarning(null);
+    setLogs([]);
+    appendLog('Consultando boletín sincronizado automáticamente (/data/boletin_actual.json)...');
+
+    try {
+      const resp = await fetch(`/data/boletin_actual.json?t=${Date.now()}`, { cache: 'no-store' });
+      if (!resp.ok) {
+        const msg =
+          'Aún no hay un boletín sincronizado automáticamente en el servidor. Ejecuta el workflow en GitHub Actions o sube tu archivo PDF manualmente en la pestaña "Subir Archivo".';
+        setSyncInfo({ status: 'empty', message: msg });
+        appendLog(`[!] ${msg}`);
+        return;
+      }
+
+      const contentType = resp.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const msg =
+          'El servidor aún no contiene un boletín JSON generado por GitHub Actions. Usa "Subir Archivo (PDF/CSV/TXT)" o ejecuta el Action en GitHub.';
+        setSyncInfo({ status: 'empty', message: msg });
+        appendLog(`[!] ${msg}`);
+        return;
+      }
+
+      const data: SyncPayload = await resp.json();
+      const records = Array.isArray(data.records) ? data.records : [];
+
+      if (records.length === 0) {
+        const msg = 'El archivo de sincronización automática no tiene empresas nuevas todavía.';
+        setSyncInfo({ status: 'empty', message: msg });
+        appendLog(`[!] ${msg}`);
+        return;
+      }
+
+      setParsedRecords(records);
+      const fechaFmt = data.updatedAt ? new Date(data.updatedAt).toLocaleString('es-DO') : 'Reciente';
+      const okMsg = `Boletín "${data.bulletinTitle || 'ONAPI'}" listo (${records.length} empresas · Actualizado: ${fechaFmt}).`;
+      setSyncInfo({ status: 'ok', message: okMsg });
+      appendLog(`[✓] ${okMsg}`);
+    } catch (err: any) {
+      const msg = `No se pudo comprobar la sincronización automática (${err?.message || 'red'}).`;
+      setSyncInfo({ status: 'empty', message: msg });
+      appendLog(`[!] ${msg}`);
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -139,6 +245,7 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
     if (file) {
       processUploadedFile(file);
     }
+    e.target.value = '';
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
@@ -165,11 +272,10 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
     setIsCompleted(false);
     setProgress(5);
     setCurrentStep(1);
-    setLogs([]);
     setProcessedClients([]);
 
     appendLog('Iniciando infraestructura de datos ONAPI -> Google Places -> DGII...');
-    await new Promise((r) => setTimeout(r, 400));
+    await new Promise((r) => setTimeout(r, 150));
 
     // ==========================================
     // ETAPA 1: OBTENCIÓN DE REGISTROS
@@ -177,53 +283,56 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
     appendLog('[+] ETAPA 1: Parseando denominaciones y actividades de ONAPI...');
     let registrosBase: ExtractedOnapiRecord[] = [];
 
-    if (inputMode === 'file' && parsedRecords && parsedRecords.length > 0) {
+    if ((inputMode === 'file' || inputMode === 'sync') && parsedRecords && parsedRecords.length > 0) {
       registrosBase = parsedRecords;
-    } else {
+    } else if (customText.trim().length > 0) {
       registrosBase = extraerDatosOnapiTexto(customText);
     }
 
     if (registrosBase.length === 0) {
       appendLog('[-] Error: No se encontraron registros de empresas en el archivo o texto proporcionado.');
-      appendLog('[-] Asegúrate de que el documento incluya campos "Denominación:" y "Actividad:" o nombres comerciales terminados en S.R.L., S.A.S., etc.');
+      appendLog(
+        '[-] Verifica que el PDF tenga texto seleccionable con nombres comerciales (E/2026-..., Denominación:, REG. NO., o S.R.L./S.A.S./E.I.R.L.).'
+      );
       setIsRunning(false);
       return;
     }
 
     appendLog(`[✓] Extracción ONAPI exitosa: ${registrosBase.length} empresas dominicanas identificadas.`);
     setProgress(25);
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 150));
 
     // ==========================================
-    // ETAPA 2 & 3: ENRIQUECIMIENTO (Google Places + DGII)
+    // ETAPA 2 & 3: ENRIQUECIMIENTO POR LOTES (Google Places + DGII)
     // ==========================================
     setCurrentStep(2);
-    appendLog('[+] ETAPA 2: Consultando Google Places API (República Dominicana)...');
-    appendLog('[+] ETAPA 3: Consultando clasificación fiscal societaria de la DGII...');
+    appendLog('[+] ETAPA 2: Enriqueciendo ubicaciones y teléfonos corporativos (RD)...');
+    appendLog('[+] ETAPA 3: Clasificando tipo societario DGII y RNC...');
 
     const resultados: Client[] = [];
     const total = registrosBase.length;
+    const chunkSize = total > 100 ? 75 : 10;
 
-    for (let i = 0; i < total; i++) {
-      const item = registrosBase[i];
-      appendLog(`    -> [${i + 1}/${total}] Procesando: ${item.nombre_comercial}`);
+    for (let start = 0; start < total; start += chunkSize) {
+      const end = Math.min(start + chunkSize, total);
+      for (let i = start; i < end; i++) {
+        const item = registrosBase[i];
+        const placesInfo = obtenerContactoGoogle(item.nombre_comercial);
+        const dgiiInfo = obtenerTipoEmpresaDgii(item.nombre_comercial);
+        const clientObj = convertirRegistroACliente(item, placesInfo, dgiiInfo, i);
+        resultados.push(clientObj);
 
-      // Google Places
-      const placesInfo = obtenerContactoGoogle(item.nombre_comercial);
+        if (i < 3) {
+          appendLog(`    -> [${i + 1}/${total}] ${item.nombre_comercial} · ${dgiiInfo.siglas}`);
+        }
+      }
 
-      // DGII
-      const dgiiInfo = obtenerTipoEmpresaDgii(item.nombre_comercial);
+      if (end > 3 && (end === total || end % (chunkSize * 2) === 0)) {
+        appendLog(`    -> Procesadas ${end}/${total} empresas...`);
+      }
 
-      const clientObj = convertirRegistroACliente(item, placesInfo, dgiiInfo, i);
-      resultados.push(clientObj);
-
-      appendLog(`       • Places: ${placesInfo.telefonoCorporativo} | ${placesInfo.direccionExacta.slice(0, 38)}...`);
-      appendLog(`       • DGII: ${dgiiInfo.tipoSociedad} (RNC: ${dgiiInfo.rnc})`);
-
-      const stepProgress = 25 + Math.round(((i + 1) / total) * 65);
-      setProgress(stepProgress);
-      const delay = total > 50 ? 20 : total > 20 ? 60 : 120;
-      await new Promise((r) => setTimeout(r, delay));
+      setProgress(25 + Math.round((end / total) * 68));
+      await new Promise((r) => setTimeout(r, 12));
     }
 
     // ==========================================
@@ -234,7 +343,7 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
     setProcessedClients(resultados);
     setIsCompleted(true);
     setIsRunning(false);
-    appendLog(`[✓] ¡Pipeline completado con éxito! ${resultados.length} empresas listas para prospección.`);
+    appendLog(`[✓] ¡Pipeline completado con éxito! ${resultados.length} empresas listas para importar al CRM.`);
   };
 
   const handleExportGeneratedCSV = () => {
@@ -264,11 +373,11 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
                     Extractor Oficial de Boletines ONAPI
                   </h3>
                   <span className="px-2 py-0.5 text-[10px] font-bold bg-indigo-500/20 text-indigo-300 rounded-md border border-indigo-400/30">
-                    PDF · CSV · TXT
+                    PDF · CSV · TXT · AUTO
                   </span>
                 </div>
                 <p className="text-xs text-slate-400">
-                  Carga el PDF oficial de ONAPI y enriquécelo automáticamente con Google Places y la DGII
+                  Carga el PDF oficial de ONAPI o sincroniza el boletín automatizado hacia la plataforma
                 </p>
               </div>
             </div>
@@ -301,7 +410,7 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
                   <span>Fuente de los datos:</span>
                 </label>
 
-                <div className="flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200">
+                <div className="flex flex-wrap items-center bg-slate-100 p-1 rounded-lg border border-slate-200 gap-1">
                   <button
                     onClick={() => setInputMode('file')}
                     className={`px-3 py-1 text-xs font-semibold rounded-md transition-colors cursor-pointer flex items-center gap-1.5 ${
@@ -320,6 +429,18 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
                     <FileText className="w-3.5 h-3.5" />
                     <span>Pegar Texto</span>
                   </button>
+                  <button
+                    onClick={() => {
+                      setInputMode('sync');
+                      if (!syncInfo) handleSyncFromServer();
+                    }}
+                    className={`px-3 py-1 text-xs font-semibold rounded-md transition-colors cursor-pointer flex items-center gap-1.5 ${
+                      inputMode === 'sync' ? 'bg-white text-emerald-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Bot className="w-3.5 h-3.5" />
+                    <span>Sync Automático</span>
+                  </button>
                 </div>
               </div>
 
@@ -331,20 +452,21 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
                     ¿Cuál documento descargar en ONAPI (onapi.gob.do)?
                   </span>
                   <span className="text-[11px] text-amber-800 leading-relaxed block">
-                    Para captar nuevos clientes con empresas recién fundadas, en el portal de ONAPI descarga el Boletín Oficial en la sección{' '}
-                    <strong>"Nombres Comerciales - Solicitudes"</strong> (las nuevas S.R.L., S.A.S. y E.I.R.L.). Si subes un extracto de{' '}
-                    <strong>Lemas Comerciales o Signos Distintivos</strong> (como eslóganes), nuestro motor inteligente ahora también lo divide y extrae cada empresa por separado.
+                    Sube el PDF oficial quincenal (ej: <strong>Internet ONAPI DD-MM-YYYY.pdf</strong> o{' '}
+                    <strong>Nombres Comerciales</strong>). El motor reconstruye las filas de las tablas, detecta códigos{' '}
+                    <code className="bg-amber-100 px-1 rounded">E/2026-...</code>, etiquetas{' '}
+                    <code className="bg-amber-100 px-1 rounded">Denominación:</code>, <code className="bg-amber-100 px-1 rounded">REG. NO.</code> y razones sociales dominicanas (<code className="bg-amber-100 px-1 rounded">S.R.L.</code>, <code className="bg-amber-100 px-1 rounded">S.A.S.</code>, <code className="bg-amber-100 px-1 rounded">E.I.R.L.</code>).
                   </span>
                 </div>
               </div>
 
               {/* Mode 1: File Upload (PDF, CSV, TXT) */}
               {inputMode === 'file' && (
-                <div>
+                <div className="space-y-2">
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".pdf,.txt,.csv"
+                    accept=".pdf,.txt,.csv,.json"
                     onChange={handleFileInputChange}
                     className="hidden"
                   />
@@ -357,8 +479,10 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
                     className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all ${
                       isDragOver
                         ? 'border-indigo-500 bg-indigo-50/70 scale-[1.01]'
-                        : fileName
+                        : fileName && parsedRecords && parsedRecords.length > 0
                         ? 'border-emerald-400 bg-emerald-50/30'
+                        : fileWarning
+                        ? 'border-amber-400 bg-amber-50/30'
                         : 'border-slate-300 bg-slate-50 hover:bg-slate-100 hover:border-slate-400'
                     }`}
                   >
@@ -374,19 +498,32 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
                       </div>
                     ) : fileName ? (
                       <div className="flex flex-col items-center justify-center">
-                        <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mb-2">
+                        <div
+                          className={`w-12 h-12 rounded-full flex items-center justify-center mb-2 ${
+                            parsedRecords && parsedRecords.length > 0
+                              ? 'bg-emerald-100 text-emerald-600'
+                              : 'bg-amber-100 text-amber-600'
+                          }`}
+                        >
                           <FileCheck2 className="w-6 h-6" />
                         </div>
-                        <span className="text-sm font-bold text-slate-900">
-                          {fileName}
-                        </span>
+                        <span className="text-sm font-bold text-slate-900">{fileName}</span>
                         <span className="text-xs text-slate-500 mt-0.5">
-                          Tamaño: {fileSize} · {parsedRecords ? `${parsedRecords.length} empresas detectadas` : 'Listo para procesar'}
+                          Tamaño: {fileSize} ·{' '}
+                          {parsedRecords !== null
+                            ? `${parsedRecords.length} empresas detectadas`
+                            : 'Listo para procesar'}
                         </span>
                         <div className="mt-3 flex items-center gap-2">
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold bg-emerald-100 text-emerald-800">
-                            ✓ Archivo cargado correctamente
-                          </span>
+                          {parsedRecords && parsedRecords.length > 0 ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold bg-emerald-100 text-emerald-800">
+                              ✓ {parsedRecords.length} empresas listas para importar
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold bg-amber-100 text-amber-800">
+                              ⚠ 0 registros detectados
+                            </span>
+                          )}
                           <span className="text-xs text-indigo-600 underline font-medium">
                             Haz clic para cambiar archivo
                           </span>
@@ -399,7 +536,8 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
                           Haz clic aquí para seleccionar tu archivo o arrástralo y suéltalo
                         </span>
                         <span className="text-xs text-slate-500 mt-1 block">
-                          Soporta archivos oficiales de ONAPI en formato <strong>.PDF</strong>, <strong>.CSV</strong> o <strong>.TXT</strong>
+                          Soporta archivos oficiales de ONAPI en formato <strong>.PDF</strong>, <strong>.CSV</strong> o{' '}
+                          <strong>.TXT</strong>
                         </span>
                         <div className="mt-4 flex items-center justify-center gap-3 text-[11px] text-slate-500">
                           <span className="inline-flex items-center gap-1 bg-white px-2.5 py-1 rounded-md border border-slate-200">
@@ -415,6 +553,13 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
                       </div>
                     )}
                   </div>
+
+                  {fileWarning && (
+                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <span>{fileWarning}</span>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -423,14 +568,53 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
                 <div>
                   <textarea
                     value={customText}
-                    onChange={(e) => setCustomText(e.target.value)}
+                    onChange={(e) => {
+                      setCustomText(e.target.value);
+                      setParsedRecords(null);
+                    }}
                     rows={5}
-                    placeholder="Pega aquí el extracto de texto del boletín con campos 'Denominación:' y 'Actividad:'..."
+                    placeholder="Pega aquí el extracto de texto del boletín ONAPI (con E/2026-..., Denominación: y Actividad:, o listado de empresas)..."
                     className="w-full p-3 font-mono text-xs bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
                   />
                   <span className="text-[11px] text-slate-500 mt-1 block">
                     Copia y pega cualquier fragmento de texto del PDF o de la página de publicaciones de ONAPI.
                   </span>
+                </div>
+              )}
+
+              {/* Mode 3: Automatic Sync (GitHub Actions -> Netlify) */}
+              {inputMode === 'sync' && (
+                <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <span className="text-xs font-bold text-slate-900 block">
+                        Sincronización Automática desde GitHub Actions
+                      </span>
+                      <span className="text-[11px] text-slate-600 block">
+                        Descarga el boletín procesado automáticamente por <code className="bg-slate-200 px-1 rounded">onapi_scraper.yml</code> hacia la plataforma.
+                      </span>
+                    </div>
+                    <button
+                      onClick={handleSyncFromServer}
+                      disabled={isSyncing}
+                      className="px-3.5 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 rounded-lg flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                      <span>{isSyncing ? 'Verificando...' : 'Buscar Boletín Sincronizado'}</span>
+                    </button>
+                  </div>
+
+                  {syncInfo && (
+                    <div
+                      className={`p-3 rounded-lg text-xs border ${
+                        syncInfo.status === 'ok'
+                          ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                          : 'bg-amber-50 border-amber-200 text-amber-800'
+                      }`}
+                    >
+                      {syncInfo.message}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -442,7 +626,7 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
                   Ejecutar Pipeline Automatizado
                 </span>
                 <span className="text-[11px] text-indigo-700 block">
-                  Aplica extracción regex, enriquecimiento con Google Places RD y clasificación societaria DGII
+                  Aplica extracción multi-formato, enriquecimiento RD y clasificación societaria DGII
                 </span>
               </div>
 
@@ -478,9 +662,7 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
                   <FileText className="w-3.5 h-3.5 text-indigo-600" />
                   <span>1. Extracción ONAPI</span>
                 </div>
-                <span className="text-[11px] text-slate-600 block">
-                  Lectura PDF / Regex
-                </span>
+                <span className="text-[11px] text-slate-600 block">Lectura PDF / Regex</span>
               </div>
 
               <div
@@ -494,9 +676,7 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
                   <Phone className="w-3.5 h-3.5 text-blue-600" />
                   <span>2. Google Places</span>
                 </div>
-                <span className="text-[11px] text-slate-600 block">
-                  Teléfono corporativo RD
-                </span>
+                <span className="text-[11px] text-slate-600 block">Teléfono corporativo RD</span>
               </div>
 
               <div
@@ -510,9 +690,7 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
                   <Building className="w-3.5 h-3.5 text-emerald-600" />
                   <span>3. Filtro DGII</span>
                 </div>
-                <span className="text-[11px] text-slate-600 block">
-                  S.R.L. / S.A.S. / RNC
-                </span>
+                <span className="text-[11px] text-slate-600 block">S.R.L. / S.A.S. / RNC</span>
               </div>
 
               <div
@@ -526,9 +704,7 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
                   <CheckCircle2 className="w-3.5 h-3.5 text-purple-600" />
                   <span>4. Base de Datos</span>
                 </div>
-                <span className="text-[11px] text-slate-600 block">
-                  Exportar a CRM / CSV
-                </span>
+                <span className="text-[11px] text-slate-600 block">Exportar a CRM / CSV</span>
               </div>
             </div>
 
@@ -601,17 +777,11 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {processedClients.map((client) => (
+                      {processedClients.slice(0, 100).map((client) => (
                         <tr key={client.id} className="hover:bg-slate-50">
-                          <td className="py-2 px-3 font-semibold text-slate-900">
-                            {client.name}
-                          </td>
-                          <td className="py-2 px-3 text-slate-600">
-                            {client.sector || client.industry}
-                          </td>
-                          <td className="py-2 px-3 font-mono text-slate-700">
-                            {client.phone}
-                          </td>
+                          <td className="py-2 px-3 font-semibold text-slate-900">{client.name}</td>
+                          <td className="py-2 px-3 text-slate-600">{client.sector || client.industry}</td>
+                          <td className="py-2 px-3 font-mono text-slate-700">{client.phone}</td>
                           <td className="py-2 px-3">
                             <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
                               {client.dgii?.siglas || 'S.R.L.'}
@@ -621,6 +791,11 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
                       ))}
                     </tbody>
                   </table>
+                  {processedClients.length > 100 && (
+                    <div className="p-2 text-center text-[11px] text-slate-500 bg-slate-50 border-t border-slate-200">
+                      Mostrando las primeras 100 de {processedClients.length} empresas extraídas (todas se importarán al CRM).
+                    </div>
+                  )}
                 </div>
               </div>
             )}

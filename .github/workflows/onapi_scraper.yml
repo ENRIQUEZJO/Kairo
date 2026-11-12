@@ -27,14 +27,13 @@ jobs:
       - name: 3. Instalar librerías de extracción
         run: |
           python -m pip install --upgrade pip
-          pip install pdfplumber pandas requests
+          pip install pdfplumber pandas requests beautifulsoup4
 
       - name: 4. Ejecutar Pipeline Extractor de ONAPI
         env:
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
         run: |
           echo "[*] Iniciando extractor automático de ONAPI..."
-          # Si tienes el PDF en el repo o url de descarga directa:
           python scripts/extractor_onapi_auto.py
 
       - name: 5. Guardar CSV como artefacto descargable
@@ -44,10 +43,10 @@ jobs:
           path: nuevas_empresas_rd_completo.csv
           retention-days: 30
 
-      - name: 6. Guardar y actualizar CSV en el repositorio
+      - name: 6. Guardar y actualizar datos en el repositorio para la plataforma web
         run: |
           git config --global user.name 'GitHub Actions Bot'
           git config --global user.email 'bot@kairo.com.do'
-          git add nuevas_empresas_rd_completo.csv
+          git add nuevas_empresas_rd_completo.csv public/data/boletin_actual.json
           git commit -m "Auto: Nuevas empresas ONAPI extraídas [$(date +'%Y-%m-%d')]" || exit 0
           git push

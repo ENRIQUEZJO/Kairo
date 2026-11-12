@@ -2,6 +2,12 @@ import { Advisor, Client, DgiiFiscalEnrichment, GooglePlacesEnrichment, OnapiExt
 import { DOMINICAN_PLACES_DATABASE } from '../data/mockOnapiBoletin';
 import { clasificarActividadEmpresarial } from './sectorClassifier';
 
+const CORP_SUFFIX_REGEX =
+  /\b(?:S\.?\s*R\.?\s*L\.?|S\.?\s*A\.?\s*S\.?|E\.?\s*I\.?\s*R\.?\s*L\.?|S\.\s*A\.?|C\.\s*(?:POR|X)\s*A\.?)(?=\s|$|[,\.;\)])/i;
+
+const ACTIVITY_VERB_BOUNDARY =
+  /\s+(?=(?:VENTA|SERVICIOS|IMPORTACI[OÓ]N|EXPORTACI[OÓ]N|COMERCIALIZACI[OÓ]N|CONSTRUCCI[OÓ]N|FABRICACI[OÓ]N|ELABORACI[OÓ]N|COMPRA|DISTRIBUCI[OÓ]N|OPERACI[OÓ]N|PRESTACI[OÓ]N|CONSULTOR[IÍ]A|ASESOR[IÍ]A|DESARROLLO|ADMINISTRACI[OÓ]N|DEDICAD[OA]|TODO\s+TIPO|ACTIVIDADES|ALQUILER|MANTENIMIENTO|TRANSPORTE|GESTI[OÓ]N|PRODUCCI[OÓ]N|INSTALACI[OÓ]N|REPARACI[OÓ]N|EXPLOTACI[OÓ]N|PROMOCI[OÓ]N|FINANCIAMIENTO|INVERSIONES\s+EN)\b)/i;
+
 /**
  * ETAPA 1: Extracción integral y robusta de Boletines Oficiales de ONAPI
  * Diseñado específicamente para publicaciones oficiales de ONAPI (PDF, CSV, TXT)
@@ -14,6 +20,15 @@ export function extraerDatosOnapiTexto(texto: string): {
 }[] {
   if (!texto || texto.trim().length === 0) return [];
 
+  // Limpiar marcadores de página añadidos por el lector PDF y encabezados repetidos
+  const textoLimpio = texto
+    .replace(/\r\n/g, '\n')
+    .replace(/^---\s*PÁGINA\s+\d+\s*---$/gim, '\n')
+    .replace(/^P[áa]gina\s+\d+\s+de\s+\d+\s*$/gim, '')
+    .trim();
+
+  if (!textoLimpio) return [];
+
   const empresasExtraidas: {
     nombre_comercial: string;
     descripcion_actividad: string;
@@ -23,40 +38,59 @@ export function extraerDatosOnapiTexto(texto: string): {
 
   const seenNames = new Set<string>();
 
-  const agregarEmpresa = (nombre: string, actividad: string, solicitante?: string, registroNo?: string) => {
-    let cleanNombre = nombre
-      .replace(/^[\s\d\.\:\;\-\,\*#\(\)]+/, '')
-      .replace(/[\s\.\:\;\-\,\*#\(\)]+$/, '')
+  const limpiarRuidoNombre = (raw: string): { nombre: string; regExtraido?: string } => {
+    let s = raw
       .replace(/\s+/g, ' ')
+      .replace(/^[\s\d\.\:\;\-\,\*#\(\)\/]+(?=[A-ZÁÉÍÓÚÑa-záéíóúñ])/, '')
+      .trim();
+
+    let regExtraido: string | undefined;
+
+    // Extraer prefijo de expediente o fecha si quedó pegado (ej: "E/2026-50276 22/7/26 NOMBRE...")
+    const expDatePrefix = s.match(/^(E\/\d{4}-\d{3,7}|\d{4}-\d{4,7})\s+(?:\d{1,2}\/\d{1,2}\/\d{2,4}\s+)?(.+)$/i);
+    if (expDatePrefix) {
+      regExtraido = expDatePrefix[1].trim();
+      s = expDatePrefix[2].trim();
+    }
+
+    // Extraer prefijo REGISTRO NO. / SOLICITUD NO.
+    const regPrefixMatch = s.match(
+      /^(?:REGISTRO|REG\.?|SOLICITUD|EXPEDIENTE)\s*(?:N[ºo°]?|NO\.?|NUMERO)?\s*[:\-]?\s*([A-Z]?\/?[0-9\-\/]+)\s+(.+)$/i
+    );
+    if (regPrefixMatch) {
+      regExtraido = regExtraido || regPrefixMatch[1].trim();
+      s = regPrefixMatch[2].trim();
+    }
+
+    s = s
+      .replace(/^(?:REGISTRO|REG\.?|SOLICITUD|EXPEDIENTE)\s*(?:N[ºo°]?|NO\.?|NUMERO)?\s*[:\-]?\s*[A-Z]?\/?[0-9\-\/]*\s*/i, '')
+      .replace(/^(?:LEMA\s+COMERCIAL|SIGNO\s+DISTINTIVO|NOMBRE\s+COMERCIAL|DENOMINACI[OÓ]N)\s*[:\-]?\s*/i, '')
+      .replace(/^\d{1,2}\/\d{1,2}\/\d{2,4}\s+/, '')
+      .replace(/^[\s\.\:\;\-\,\*#\(\)]+/, '')
+      .replace(/[\s\:\;\-\,\*#]+$/, '')
       .trim()
       .toUpperCase();
 
-    // 1. Extraer número de registro si viene pegado al nombre (ej: "REGISTRO NO. 345699 PASTEURIZADORA RICA, S.A.")
-    const regPrefixMatch = cleanNombre.match(/^(?:REGISTRO|REG|SOLICITUD|EXPEDIENTE)\s*(?:N[ºo]?|NO\.?|NUMERO)?\s*[:\-]?\s*([0-9\-\/]+)\s+(.+)$/i);
-    if (regPrefixMatch) {
-      if (!registroNo || registroNo.startsWith('2026-8')) {
-        registroNo = regPrefixMatch[1].trim();
-      }
-      cleanNombre = regPrefixMatch[2].trim();
+    // Quitar punto final solo si NO es parte de un sufijo societario (S.R.L., S.A.S., E.I.R.L., S.A.)
+    if (s.endsWith('.') && !/(?:S\.R\.L\.|S\.A\.S\.|E\.I\.R\.L\.|S\.A\.|C\.X\.A\.|INC\.)$/i.test(s)) {
+      s = s.slice(0, -1).trim();
     }
 
-    // 2. Limpiar cualquier prefijo de control o números residuales
-    cleanNombre = cleanNombre
-      .replace(/^(?:REGISTRO|REG|SOLICITUD|EXPEDIENTE)\s*(?:N[ºo]?|NO\.?|NUMERO)?\s*[:\-]?\s*[0-9\-\/]*\s*/i, '')
-      .replace(/^(?:LEMA\s+COMERCIAL|SIGNO\s+DISTINTIVO|NOMBRE\s+COMERCIAL|DENOMINACI[OÓ]N)\s*[:\-]?\s*/i, '')
-      .replace(/^[\s\d\.\:\;\-\,\*#\(\)]+/, '')
-      .replace(/[\s\.\:\;\-\,\*#\(\)]+$/, '')
-      .trim();
+    return { nombre: s, regExtraido };
+  };
 
-    // Eliminar palabras de control de ONAPI que puedan haberse colado
+  const agregarEmpresa = (nombre: string, actividad: string, solicitante?: string, registroNo?: string) => {
+    const { nombre: cleanNombre, regExtraido } = limpiarRuidoNombre(nombre);
+    const finalReg = (registroNo && !/^2026-8\d{3}$/.test(registroNo) ? registroNo : regExtraido || registroNo || '').trim();
+
     if (
-      cleanNombre.startsWith('SOLICITUD') ||
-      cleanNombre.startsWith('DENOMINACION') ||
-      cleanNombre.startsWith('ACTIVIDAD') ||
-      cleanNombre.startsWith('BOLETIN') ||
-      cleanNombre.startsWith('OFICINA NACIONAL') ||
+      !cleanNombre ||
       cleanNombre.length < 3 ||
-      cleanNombre.length > 90
+      cleanNombre.length > 110 ||
+      /^(?:SOLICITUD|DENOMINACI[OÓ]N|ACTIVIDAD|BOLET[IÍ]N|OFICINA\s+NACIONAL|DEPARTAMENTO|PUBLICACIONES|P[ÁA]GINA|REP[ÚU]BLICA\s+DOMINICANA|EXPEDIENTE|FECHA|TITULAR|SOLICITANTE|INDICE|CONCESIONES|RENOVACIONES)/i.test(
+        cleanNombre
+      ) ||
+      /^\d+[\-\/\d\s]*$/.test(cleanNombre)
     ) {
       return;
     }
@@ -64,179 +98,302 @@ export function extraerDatosOnapiTexto(texto: string): {
     const key = cleanNombre.toLowerCase();
     if (!seenNames.has(key)) {
       seenNames.add(key);
+      const cleanAct = actividad
+        .replace(/\s+/g, ' ')
+        .replace(/^(?:Actividad(?:\s+Comercial)?|Objeto(?:\s+Social)?|Descripci[oó]n)\s*[:\-]\s*/i, '')
+        .trim();
+      const cleanSol = (solicitante || '')
+        .replace(/\s+/g, ' ')
+        .replace(/^(?:Solicitante|Titular|Propietario|Representante)\s*[:\-]\s*/i, '')
+        .trim();
+
       empresasExtraidas.push({
         nombre_comercial: cleanNombre,
-        descripcion_actividad: actividad.trim() || 'Actividad comercial registrada en ONAPI',
-        solicitante: (solicitante || 'Representante Legal').trim(),
-        registroNo: (registroNo || `2026-${(8100 + empresasExtraidas.length).toString()}`).trim(),
+        descripcion_actividad: cleanAct || 'Actividad comercial registrada en ONAPI',
+        solicitante: cleanSol || 'Representante Legal',
+        registroNo: finalReg || `2026-${(8100 + empresasExtraidas.length).toString()}`,
       });
     }
   };
 
+  // Helper para separar "NOMBRE EMPRESA, S.R.L. ACTIVIDAD... TITULAR" en columnas tabulares
+  const separarNombreYActividad = (
+    cuerpo: string
+  ): { nombre: string; actividad: string; solicitante?: string } => {
+    const trimmed = cuerpo.trim();
+    if (!trimmed) return { nombre: '', actividad: '' };
+
+    // 1. Si tiene sufijo societario dominicano (S.R.L., S.A.S., E.I.R.L., S.A., C. POR A.)
+    const corpMatch = trimmed.match(
+      new RegExp(`^([\\s\\S]{2,95}?${CORP_SUFFIX_REGEX.source})(?=[\\s,;\\)]|$)([\\s\\S]*)$`, 'i')
+    );
+    if (corpMatch) {
+      const nom = corpMatch[1].trim();
+      const resto = corpMatch[2].replace(/^[\s\.\,\-\;]+/, '').trim();
+      return { nombre: nom, actividad: resto };
+    }
+
+    // 2. Si tiene múltiples líneas: primera línea <= 90 chars suele ser el nombre comercial
+    const lines = trimmed
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    if (lines.length >= 2 && lines[0].length <= 90) {
+      return {
+        nombre: lines[0],
+        actividad: lines.slice(1).join(' '),
+      };
+    }
+
+    // 3. Una sola línea sin sufijo societario: intentar cortar en el inicio de la actividad económica
+    const singleLine = trimmed.replace(/\s+/g, ' ');
+    const verbSplit = singleLine.split(ACTIVITY_VERB_BOUNDARY);
+    if (verbSplit.length >= 2 && verbSplit[0].trim().length >= 3 && verbSplit[0].trim().length <= 90) {
+      return {
+        nombre: verbSplit[0].trim(),
+        actividad: verbSplit.slice(1).join(' ').trim(),
+      };
+    }
+
+    return {
+      nombre: singleLine.length <= 95 ? singleLine : singleLine.slice(0, 90),
+      actividad: singleLine.length > 95 ? singleLine : '',
+    };
+  };
+
   // =========================================================================
-  // ESTRATEGIA 1: Formato Estándar de Nombres Comerciales de ONAPI
-  // Etiquetas: "Denominación:", "Nombre Comercial:", "Signo Distintivo:"
+  // ESTRATEGIA 1: Formato Etiquetado de ONAPI por Bloques
+  // ("Denominación:" / "Nombre Comercial:" + "Actividad:" + "Solicitante:")
   // =========================================================================
-  const regexEtiquetas = /(?:Denominaci[oó]n|Nombre\s+Comercial|Signo\s+Distintivo|Signo\s+Solicitado)\s*[:\-]\s*(.*?)(?=(?:\r?\n\s*(?:Actividad|Objeto|Solicitante|Titular|Fecha|Clase|SOLICITUD|Denominaci[oó]n|Nombre\s+Comercial)|$))/gis;
-  const regexActividad = /(?:Actividad(?:\s+Comercial)?|Objeto(?:\s+Social)?|Descripci[oó]n(?:\s+de\s+la\s+actividad)?)\s*[:\-]\s*(.*?)(?=(?:\r?\n\s*(?:Solicitante|Titular|Fecha|Clase|SOLICITUD|Denominaci[oó]n)|$))/gis;
-  const regexSolicitante = /(?:Solicitante|Titular|Propietario|Representante)\s*[:\-]\s*(.*?)(?=(?:\r?\n\s*(?:Fecha|Clase|SOLICITUD|Denominaci[oó]n|Actividad)|$))/gis;
-  const regexRegistro = /(?:SOLICITUD\s*(?:N[ºo]?|NUMERO)?|REGISTRO\s*(?:N[ºo]?|NUMERO)?|EXPEDIENTE)\s*[:\-]?\s*([0-9\-\/]+)/gi;
+  const hasEtiquetas = /(?:Denominaci[oó]n|Nombre\s+Comercial|Signo\s+Distintivo|Signo\s+Solicitado)\s*[:\-]/i.test(
+    textoLimpio
+  );
 
-  const nombresEtiqueta: string[] = [];
-  const actividadesEtiqueta: string[] = [];
-  const solicitantesEtiqueta: string[] = [];
-  const registrosEtiqueta: string[] = [];
+  if (hasEtiquetas) {
+    const tieneCabeceraSolicitud = /(?:^|\n)\s*(?:SOLICITUD|EXPEDIENTE)\s*(?:N[ºo°]?|NO\.?|NUMERO)?\s*[:\-]/im.test(
+      textoLimpio
+    );
+    const bloquesEtiqueta = textoLimpio.split(
+      tieneCabeceraSolicitud
+        ? /(?=(?:^|\n)\s*(?:SOLICITUD|EXPEDIENTE)\s*(?:N[ºo°]?|NO\.?|NUMERO)?\s*[:\-]|-{5,})/gim
+        : /(?=(?:^|\n)\s*(?:Denominaci[oó]n|Nombre\s+Comercial|Signo\s+Distintivo|Signo\s+Solicitado)\s*[:\-]|-{5,})/gim
+    );
 
-  let m;
-  while ((m = regexEtiquetas.exec(texto)) !== null) {
-    if (m[1]?.trim()) nombresEtiqueta.push(m[1].trim());
-  }
-  while ((m = regexActividad.exec(texto)) !== null) {
-    if (m[1]?.trim()) actividadesEtiqueta.push(m[1].trim());
-  }
-  while ((m = regexSolicitante.exec(texto)) !== null) {
-    if (m[1]?.trim()) solicitantesEtiqueta.push(m[1].trim());
-  }
-  while ((m = regexRegistro.exec(texto)) !== null) {
-    if (m[1]?.trim()) registrosEtiqueta.push(m[1].trim());
-  }
+    for (const bloque of bloquesEtiqueta) {
+      const nomMatch = bloque.match(
+        /(?:Denominaci[oó]n|Nombre\s+Comercial|Signo\s+Distintivo|Signo\s+Solicitado)\s*[:\-]\s*([\s\S]*?)(?=(?:\n\s*(?:Actividad|Objeto|Descripci[oó]n|Solicitante|Titular|Propietario|Representante|Fecha|Clase|SOLICITUD|EXPEDIENTE|---)|\s*$))/i
+      );
+      if (!nomMatch || !nomMatch[1]?.trim()) continue;
 
-  if (nombresEtiqueta.length > 0) {
-    for (let i = 0; i < nombresEtiqueta.length; i++) {
+      const actMatch = bloque.match(
+        /(?:Actividad(?:\s+Comercial)?|Objeto(?:\s+Social)?|Descripci[oó]n(?:\s+de\s+la\s+actividad)?)\s*[:\-]\s*([\s\S]*?)(?=(?:\n\s*(?:Solicitante|Titular|Propietario|Representante|Fecha|Clase|SOLICITUD|EXPEDIENTE|---)|\s*$))/i
+      );
+      const solMatch = bloque.match(
+        /(?:Solicitante|Titular|Propietario|Representante)\s*[:\-]\s*([\s\S]*?)(?=(?:\n\s*(?:Fecha|Clase|SOLICITUD|EXPEDIENTE|Registro|---)|\s*$))/i
+      );
+      const regMatch = bloque.match(
+        /(?:SOLICITUD\s*(?:N[ºo°]?|NO\.?|NUMERO)?|REGISTRO\s*(?:N[ºo°]?|NO\.?|NUMERO)?|EXPEDIENTE)\s*[:\-]?\s*([A-Z]?\/?[0-9\-\/]+)/i
+      );
+
       agregarEmpresa(
-        nombresEtiqueta[i],
-        actividadesEtiqueta[i] || 'Actividad comercial registrada en ONAPI',
-        solicitantesEtiqueta[i] || 'Representante Legal',
-        registrosEtiqueta[i] || `2026-${(8100 + i).toString()}`
+        nomMatch[1],
+        actMatch?.[1] || 'Actividad comercial registrada en ONAPI',
+        solMatch?.[1] || 'Representante Legal',
+        regMatch?.[1]
       );
     }
-    if (empresasExtraidas.length > 0) return empresasExtraidas;
   }
 
   // =========================================================================
-  // ESTRATEGIA 2: Formato Condensado con "REG. NO." o "E/2026-" (Lemas y Signos)
+  // ESTRATEGIA 2: Códigos INID Oficiales de OMPI / ONAPI
+  // ((210) Expediente, (220) Fecha, (540) Denominación, (510)/(511) Actividad, (730) Titular)
   // =========================================================================
-  if (texto.includes('REG. NO.') || texto.includes('LEMA COMERCIAL') || /E\/\d{4}-\d+/i.test(texto)) {
-    const chunks = texto.split(/(?:E\/\d{4}-\d+\s+\d{1,2}\/\d{1,2}\/\d{2,4}|;\s*REG\.\s*NO\.\s*\d+)/gi);
+  if (/\(\s*210\s*\)/.test(textoLimpio) && /\(\s*540\s*\)/.test(textoLimpio)) {
+    const inidBlocks = textoLimpio.split(/(?=\(\s*210\s*\))/g);
+    for (const block of inidBlocks) {
+      const reg210 = block.match(/\(\s*210\s*\)\s*([A-Z]?\/?[0-9\-\/]+)/i);
+      const reg111 = block.match(/\(\s*111\s*\)\s*([0-9\-\/]+)/i);
+      const nom540 = block.match(/\(\s*540\s*\)\s*([\s\S]*?)(?=\(\s*\d{3}\s*\)|$)/i);
+      const act510 = block.match(/\(\s*(?:510|511)\s*\)\s*([\s\S]*?)(?=\(\s*\d{3}\s*\)|$)/i);
+      const tit730 = block.match(/\(\s*(?:730|731)\s*\)\s*([\s\S]*?)(?=\(\s*\d{3}\s*\)|$)/i);
 
-    for (const chunk of chunks) {
-      const block = chunk.trim();
-      if (block.length < 4) continue;
+      if (nom540?.[1]?.trim()) {
+        agregarEmpresa(
+          nom540[1],
+          act510?.[1] || 'Actividad comercial registrada en ONAPI',
+          tit730?.[1] || 'Representante Legal',
+          reg111?.[1] || reg210?.[1]
+        );
+      }
+    }
+  }
 
-      let nom = '';
-      let titular = '';
-      let regNo = '';
+  // =========================================================================
+  // ESTRATEGIA 3: Formato Oficial "Internet ONAPI" por Expediente / Registro
+  // Ej: "E/2026-50276 22/7/26 NOMBRE ... (NOMBRE COMERCIAL / LEMA) ...; REG. NO. 596352 TITULAR"
+  //     o tablas "E/2026-50276 22/7/26 EMPRESA, S.R.L. ACTIVIDAD TITULAR"
+  // =========================================================================
+  const hasExpedientePattern =
+    /(?:^|[\s\n])E\/\d{4}-\d{3,7}\b/i.test(textoLimpio) ||
+    /(?:^|[\s\n])20\d{2}-\d{4,7}\s+\d{1,2}\/\d{1,2}\/\d{2,4}\b/.test(textoLimpio) ||
+    /;\s*REG\.?\s*N[Oº°]?\.?\s*\d+/i.test(textoLimpio);
 
-      // Caso A: Lema comercial asociado al nombre comercial
-      const lemaMatch = block.match(/LEMA\s+COMERCIAL\s+ASOCIADO\s+AL\s+NOMBRE\s+COMERCIAL:\s*([^;]+);?\s*(?:REG\.?\s*NO\.?\s*(\d+))?\s*(.*)/i);
+  if (hasExpedientePattern) {
+    // Dividir SOLO en inicio de línea o espacio antes de E/YYYY-NNNNN para no cortar tras la barra "/"
+    const blocks = textoLimpio.split(
+      /(?=(?:^|[\s\n])(?:E\/\d{4}-\d{3,7}|20\d{2}-\d{4,7}\s+\d{1,2}\/\d{1,2}\/\d{2,4})\b)/gi
+    );
+
+    for (const rawBlock of blocks) {
+      const block = rawBlock.trim();
+      if (block.length < 6) continue;
+
+      let expediente = '';
+      let rest = block;
+
+      const headerMatch = block.match(/^(E\/\d{4}-\d{3,7}|20\d{2}-\d{4,7})\s*(?:\d{1,2}\/\d{1,2}\/\d{2,4})?\s*([\s\S]*)$/i);
+      if (headerMatch) {
+        expediente = headerMatch[1].trim();
+        rest = headerMatch[2].trim();
+      }
+
+      if (!rest || rest.length < 3) continue;
+
+      // Recortar si el bloque choca con otra sección etiquetada ("SOLICITUD:", "Denominación:")
+      rest = rest.split(/\n\s*(?:SOLICITUD\s*(?:N[ºo°]?|NO\.?|NUMERO)?\s*[:\-]|EXPEDIENTE\s*[:\-]|Denominaci[oó]n\s*[:\-])/i)[0].trim();
+
+      // Caso A: Lema Comercial asociado a un Nombre Comercial
+      const lemaMatch = rest.match(
+        /^([\s\S]*?)\(\s*LEMA\s+COMERCIAL\s*\)\s*LEMA\s+COMERCIAL\s+ASOCIADO\s+AL\s+NOMBRE\s+COMERCIAL:\s*([^;\n]+);?\s*(?:REG\.?\s*N[Oº°]?\.?\s*(\d+))?\s*([\s\S]*)$/i
+      );
       if (lemaMatch) {
-        nom = lemaMatch[1].trim();
-        regNo = lemaMatch[2] || '';
-        titular = lemaMatch[3] || '';
-        if (/S\.?R\.?L\.?|S\.?A\.?S\.?|E\.?I\.?R\.?L\.?|S\.?A\./i.test(titular)) {
-          nom = titular;
-        }
-      } else {
-        // Caso B: Directo con REG. NO.
-        const regMatch = block.match(/^(.*?);?\s*(?:REG\.?\s*NO\.?\s*(\d+))?\s*(.*)/i);
-        if (regMatch) {
-          nom = regMatch[1].trim();
-          regNo = regMatch[2] || '';
-          titular = regMatch[3] || '';
-        }
+        const lemaTexto = lemaMatch[1].trim();
+        const nombreAsociado = lemaMatch[2].trim();
+        const regNo = lemaMatch[3]?.trim() || expediente;
+        const titular = lemaMatch[4]?.trim() || '';
+
+        const empresaFinal = CORP_SUFFIX_REGEX.test(titular) && titular.length <= 95 ? titular : nombreAsociado;
+        const actividadDesc = [
+          lemaTexto ? `Lema comercial: "${lemaTexto}"` : '',
+          nombreAsociado && empresaFinal !== nombreAsociado ? `Nombre comercial: ${nombreAsociado}` : '',
+          titular ? `Titular: ${titular}` : '',
+        ]
+          .filter(Boolean)
+          .join(' · ');
+
+        agregarEmpresa(empresaFinal, actividadDesc || 'Registro en Boletín Oficial ONAPI', titular || nombreAsociado, regNo);
+        continue;
       }
 
-      nom = nom.replace(/^.*?\((?:LEMA\s+COMERCIAL|SIGNO\s+DISTINTIVO)\)\s*/i, '').trim();
+      // Extraer "; REG. NO. XXXXX TITULAR" si está al final del bloque
+      let beforeReg = rest;
+      let regNo = expediente;
+      let titular = '';
 
-      if (nom && nom.length > 2 && nom.length < 90) {
-        agregarEmpresa(
-          nom,
-          titular ? `Titular: ${titular}` : 'Registro en Boletín Oficial ONAPI',
-          titular,
-          regNo
-        );
-      }
-    }
-
-    if (empresasExtraidas.length > 0) return empresasExtraidas;
-  }
-
-  // =========================================================================
-  // ESTRATEGIA 3: Detección por Bloques de Solicitud (ONAPI Internet)
-  // Ejemplo: "SOLICITUD: 2026-1234 ... TITULAR: ACME SRL"
-  // =========================================================================
-  const bloquesSolicitud = texto.split(/(?=SOLICITUD\s*(?:N[ºo]?|NUMERO|NO\.)?\s*[:\-])/gi);
-  if (bloquesSolicitud.length > 1) {
-    for (const b of bloquesSolicitud) {
-      const regMatch = b.match(/SOLICITUD\s*(?:N[ºo]?|NUMERO|NO\.)?\s*[:\-]\s*([0-9\-\/]+)/i);
-      const nomMatch = b.match(/(?:Denominaci[oó]n|Nombre|Signo)\s*[:\-]\s*([^\r\n]+)/i);
-      const actMatch = b.match(/(?:Actividad|Objeto)\s*[:\-]\s*([^\r\n]+)/i);
-      const solMatch = b.match(/(?:Solicitante|Titular)\s*[:\-]\s*([^\r\n]+)/i);
-
-      if (nomMatch && nomMatch[1]?.trim()) {
-        agregarEmpresa(
-          nomMatch[1].trim(),
-          actMatch ? actMatch[1].trim() : 'Actividad comercial registrada en ONAPI',
-          solMatch ? solMatch[1].trim() : 'Representante Legal',
-          regMatch ? regMatch[1].trim() : undefined
-        );
-      }
-    }
-
-    if (empresasExtraidas.length > 0) return empresasExtraidas;
-  }
-
-  // =========================================================================
-  // ESTRATEGIA 4: Detección de Sociedades Comerciales Dominicanas por sufijo
-  // (S.R.L., S.A.S., E.I.R.L., S.A., INC) en líneas o tablas del documento
-  // =========================================================================
-  const lineas = texto.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
-  const regexSufijo = /\b(S\.?R\.?L\.?|S\.?A\.?S\.?|E\.?I\.?R\.?L\.?|S\.?A\.)\b/i;
-
-  for (let idx = 0; idx < lineas.length; idx++) {
-    const linea = lineas[idx];
-    if (
-      regexSufijo.test(linea) &&
-      linea.length >= 4 &&
-      linea.length < 90 &&
-      !linea.toLowerCase().startsWith('pagina') &&
-      !linea.toLowerCase().startsWith('boletin') &&
-      !linea.toLowerCase().includes('oficina nacional')
-    ) {
-      let descActividad = 'Actividad comercial y servicios generales';
-      if (idx + 1 < lineas.length && lineas[idx + 1].length > 15 && !regexSufijo.test(lineas[idx + 1])) {
-        descActividad = lineas[idx + 1];
+      const regTailMatch = rest.match(/([\s\S]*?)(?:;\s*|\s+)REG\.?\s*N[Oº°]?\.?\s*(\d{4,8})\b\s*([\s\S]*)$/i);
+      if (regTailMatch) {
+        beforeReg = regTailMatch[1].trim();
+        regNo = regTailMatch[2].trim();
+        titular = regTailMatch[3].trim();
       }
 
-      agregarEmpresa(
-        linea,
-        descActividad,
-        'Representante Legal',
-        `2026-${(8200 + empresasExtraidas.length).toString()}`
+      // Caso B: Categoría explícita entre paréntesis: (NOMBRE COMERCIAL), (ROTULO), (MARCA...), etc.
+      const tipoTagMatch = beforeReg.match(
+        /^([\s\S]{2,110}?)\s*\(\s*(?:NOMBRE\s+COMERCIAL|R[OÓ]TULO|EMBLEMA|MARCA\s+DE\s+PRODUCTO|MARCA\s+DE\s+SERVICIO|MARCA\s+MIXTA|MARCA\s+DENOMINATIVA|SIGNO\s+DISTINTIVO)\s*\)\s*([\s\S]*)$/i
       );
+      if (tipoTagMatch) {
+        const nom = tipoTagMatch[1].trim();
+        const act = tipoTagMatch[2].trim() || (titular ? `Titular: ${titular}` : 'Registro oficial ONAPI');
+        agregarEmpresa(nom, act, titular || 'Titular ONAPI', regNo);
+        continue;
+      }
+
+      // Caso C: Fila tabular de Nombre Comercial (con o sin REG. NO., con o sin S.R.L.)
+      if (expediente || regTailMatch) {
+        const { nombre, actividad } = separarNombreYActividad(beforeReg);
+        if (nombre) {
+          const actFinal =
+            actividad ||
+            (titular ? `Titular: ${titular}` : 'Registro comercial publicado en Boletín ONAPI');
+          agregarEmpresa(nombre, actFinal, titular || 'Titular ONAPI', regNo);
+        }
+      }
     }
   }
 
   // =========================================================================
-  // ESTRATEGIA 5: Detección de patrones en mayúsculas de longitud comercial
-  // en caso de documentos con nombres en texto plano (ej: INVERSIONES PEREZ)
+  // ESTRATEGIA 4: Detección por Bloques de Solicitud / Registro sin prefijo E/
   // =========================================================================
   if (empresasExtraidas.length === 0) {
-    for (const linea of lineas) {
-      // Líneas en mayúsculas de entre 4 y 50 caracteres que no sean encabezados oficiales
+    const bloquesSolicitud = textoLimpio.split(/(?=(?:^|\n)\s*(?:SOLICITUD|EXPEDIENTE|REGISTRO)\s*(?:N[ºo°]?|NUMERO|NO\.?)?\s*[:\-])/gim);
+    if (bloquesSolicitud.length > 1) {
+      for (const b of bloquesSolicitud) {
+        const regMatch = b.match(/(?:SOLICITUD|EXPEDIENTE|REGISTRO)\s*(?:N[ºo°]?|NUMERO|NO\.?)?\s*[:\-]?\s*([A-Z]?\/?[0-9\-\/]+)/i);
+        const nomMatch = b.match(/(?:Denominaci[oó]n|Nombre(?:\s+Comercial)?|Signo(?:\s+Distintivo)?)\s*[:\-]\s*([^\r\n]+)/i);
+        const actMatch = b.match(/(?:Actividad(?:\s+Comercial)?|Objeto|Descripci[oó]n)\s*[:\-]\s*([^\r\n]+)/i);
+        const solMatch = b.match(/(?:Solicitante|Titular|Propietario)\s*[:\-]\s*([^\r\n]+)/i);
+
+        if (nomMatch && nomMatch[1]?.trim()) {
+          agregarEmpresa(
+            nomMatch[1].trim(),
+            actMatch ? actMatch[1].trim() : 'Actividad comercial registrada en ONAPI',
+            solMatch ? solMatch[1].trim() : 'Representante Legal',
+            regMatch ? regMatch[1].trim() : undefined
+          );
+        }
+      }
+    }
+  }
+
+  // =========================================================================
+  // ESTRATEGIA 5: Detección de Sociedades Comerciales Dominicanas por sufijo
+  // (S.R.L., S.A.S., E.I.R.L., S.A., C. POR A.) en filas de cualquier longitud
+  // =========================================================================
+  const lineas = textoLimpio
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+
+  if (empresasExtraidas.length === 0) {
+    for (let idx = 0; idx < lineas.length; idx++) {
+      const linea = lineas[idx];
       if (
-        /^[A-ZÁÉÍÓÚÑ0-9\s\.\,\&]{5,55}$/.test(linea) &&
-        !linea.includes('BOLETIN') &&
-        !linea.includes('OFICINA') &&
-        !linea.includes('PROPIEDAD') &&
-        !linea.includes('REPUBLICA') &&
-        !linea.includes('PAGINA') &&
-        !linea.includes('SOLICITUD') &&
-        !linea.includes('PRESENTACION')
+        CORP_SUFFIX_REGEX.test(linea) &&
+        linea.length >= 4 &&
+        !/^(?:p[áa]gina|bolet[ií]n|oficina\s+nacional|en\s+virtud|se\s+hace\s+saber|vista\s+la)/i.test(linea)
       ) {
+        const { nombre, actividad } = separarNombreYActividad(linea);
+        let descActividad = actividad;
+        if (!descActividad && idx + 1 < lineas.length && lineas[idx + 1].length > 10 && !CORP_SUFFIX_REGEX.test(lineas[idx + 1])) {
+          descActividad = lineas[idx + 1];
+        }
+
+        agregarEmpresa(
+          nombre,
+          descActividad || 'Actividad comercial y servicios generales',
+          'Representante Legal',
+          `2026-${(8200 + empresasExtraidas.length).toString()}`
+        );
+      }
+    }
+  }
+
+  // =========================================================================
+  // ESTRATEGIA 6: Patrones en mayúsculas de longitud comercial (respaldo texto plano)
+  // =========================================================================
+  if (empresasExtraidas.length === 0) {
+    for (let idx = 0; idx < lineas.length; idx++) {
+      const linea = lineas[idx];
+      if (
+        /^[A-ZÁÉÍÓÚÑ0-9\s\.\,\&\-]{5,60}$/.test(linea) &&
+        !/\b(?:BOLETIN|OFICINA|PROPIEDAD|REPUBLICA|PAGINA|SOLICITUD|PRESENTACION|PUBLICACIONES|DEPARTAMENTO|CONCESIONES|NOMBRES\s+COMERCIALES|SIGNOS\s+DISTINTIVOS|LEMAS\s+COMERCIALES|INDICE|EDICION|SANTO\s+DOMINGO)\b/i.test(
+          linea
+        )
+      ) {
+        const nextLine = idx + 1 < lineas.length ? lineas[idx + 1] : '';
         agregarEmpresa(
           linea,
-          'Registro comercial identificado en Boletín ONAPI',
+          nextLine.length > 15 ? nextLine : 'Registro comercial identificado en Boletín ONAPI',
           'Titular Registrado',
           `2026-${(8300 + empresasExtraidas.length).toString()}`
         );
