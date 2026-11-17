@@ -29,7 +29,7 @@ except ImportError:
     print("[!] Error: pdfplumber no está instalado. Ejecuta: pip install pdfplumber pandas requests beautifulsoup4")
     sys.exit(1)
 
-GOOGLE_API_KEY = os.environ.get("GOOGLE_PLACES_API_KEY", "AIzaSyBJFwPHsBloLby04g7hQsbUgsz8lYmqjRA")
+GOOGLE_API_KEY = os.environ.get("GOOGLE_PLACES_API_KEY", "")
 URL_BOLETINES_ONAPI = "https://onapi.gob.do/index.php/publicaciones/boletines"
 ARCHIVO_SALIDA_CSV = "nuevas_empresas_rd_completo.csv"
 ARCHIVO_SALIDA_JSON = os.path.join("public", "data", "boletin_actual.json")
